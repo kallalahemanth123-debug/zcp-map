@@ -1,6 +1,7 @@
 package dev.zcpmap.app.settings
 
 import android.content.Context
+import androidx.core.content.edit
 import dev.zcpmap.agent.LocalNetworkPolicy
 
 /** Which "brain" negotiates for this phone. None of them uses a cloud API. */
@@ -75,19 +76,19 @@ class SettingsStore(context: Context) {
     }
 
     fun save(s: AgentSettings) {
-        prefs.edit()
-            .putString("mode", s.mode.name)
-            .putString("server_url", s.serverUrl.trim())
-            .putString("server_model", s.serverModel.trim())
-            .putBoolean("server_native_tools", s.serverNativeTools)
-            .putString("model_file", s.modelFileName)
-            .putBoolean("device_native_tools", s.onDeviceNativeTools)
-            .putBoolean("device_gpu", s.onDeviceGpu)
-            .putInt("device_ctx", s.onDeviceContextTokens)
-            .putBoolean("auto_accept", s.autoAccept)
-            .putInt("max_accept_mb", s.maxAcceptMb)
-            .putFloat("radius", s.radiusMeters.toFloat())
-            .putBoolean("require_psts", s.requireProvisionedSts)
-            .apply()
+        prefs.edit {
+            putString("mode", s.mode.name)
+            putString("server_url", s.serverUrl.trim())
+            putString("server_model", s.serverModel.trim())
+            putBoolean("server_native_tools", s.serverNativeTools)
+            putString("model_file", s.modelFileName)
+            putBoolean("device_native_tools", s.onDeviceNativeTools)
+            putBoolean("device_gpu", s.onDeviceGpu)
+            putInt("device_ctx", s.onDeviceContextTokens)
+            putBoolean("auto_accept", s.autoAccept)
+            putInt("max_accept_mb", s.maxAcceptMb)
+            putFloat("radius", s.radiusMeters.toFloat())
+            putBoolean("require_psts", s.requireProvisionedSts)
+        }
     }
 }

@@ -290,8 +290,7 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
                 var copied = 0L
                 importState.value = ImportState.Copying(name, 0)
                 withContext(Dispatchers.IO) {
-                    val input = ctx.contentResolver.openInputStream(uri) ?: throw IOException("cannot open the selected file")
-                    input.use { inp ->
+                    ctx.contentResolver.openInputStream(uri)?.use { inp ->
                         tmp.outputStream().use { out ->
                             val buf = ByteArray(1 shl 20)
                             while (true) {
@@ -302,7 +301,7 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
                                 if (copied % (64L shl 20) < n) importState.value = ImportState.Copying(name, copied)
                             }
                         }
-                    }
+                    } ?: throw IOException("cannot open the selected file")
                     // Keep exactly one model on disk.
                     dir.listFiles()?.filter { it.name != tmp.name }?.forEach { it.delete() }
                     if (!tmp.renameTo(File(dir, name))) throw IOException("could not store the model")
@@ -377,8 +376,8 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
                     }?.let { sanitizeFileName(it) } ?: "file.bin"
                     val dest = File(g.sandbox.root, "outbox/$name")
                     dest.parentFile?.mkdirs()
-                    val input = ctx.contentResolver.openInputStream(uri) ?: throw IOException("cannot open the selected file")
-                    input.use { inp -> dest.outputStream().use { inp.copyTo(it) } }
+                    ctx.contentResolver.openInputStream(uri)?.use { inp -> dest.outputStream().use { inp.copyTo(it) } }
+                        ?: throw IOException("cannot open the selected file")
                 }
                 refreshOutbox()
                 appendMesh(LogTone.TRANSPORT, "added to outbox: ${outbox.value.lastOrNull()?.first ?: ""}", null)

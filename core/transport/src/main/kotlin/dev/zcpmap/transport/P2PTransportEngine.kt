@@ -1,5 +1,6 @@
 package dev.zcpmap.transport
 
+import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
@@ -227,6 +228,11 @@ class P2PTransportEngine(
 
     override suspend fun openBulkLink(endpointId: String, role: HandshakeRole, params: BulkLinkParams): FrameLink? {
         if (!context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE)) return null
+        // The bulk link is optional: without the grant, transfers simply stay on Nearby Connections.
+        if (!hasAwarePermissions()) {
+            Log.i(TAG, "Wi-Fi Aware skipped: Nearby Wi-Fi devices permission not granted")
+            return null
+        }
         val wam = context.getSystemService(WifiAwareManager::class.java) ?: return null
         if (!wam.isAvailable) return null
         val thread = HandlerThread("zcp-aware").apply { start() }
@@ -248,12 +254,22 @@ class P2PTransportEngine(
         }
     }
 
+    private fun hasAwarePermissions(): Boolean =
+        AWARE_PERMISSIONS.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
+
+    // Each Wi-Fi Aware call below also handles SecurityException at the call site: the user can revoke
+    // NEARBY_WIFI_DEVICES at any moment, including between the check in openBulkLink and the call.
     private suspend fun attach(wam: WifiAwareManager, handler: Handler): WifiAwareSession? =
         suspendCancellableCoroutine { cont ->
-            wam.attach(object : AttachCallback() {
-                override fun onAttached(session: WifiAwareSession) { if (cont.isActive) cont.resume(session) else session.close() }
-                override fun onAttachFailed() { if (cont.isActive) cont.resume(null) }
-            }, handler)
+            try {
+                wam.attach(object : AttachCallback() {
+                    override fun onAttached(session: WifiAwareSession) { if (cont.isActive) cont.resume(session) else session.close() }
+                    override fun onAttachFailed() { if (cont.isActive) cont.resume(null) }
+                }, handler)
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Wi-Fi Aware attach refused: ${e.message}")
+                if (cont.isActive) cont.resume(null)
+            }
         }
 
     private suspend fun publisherPath(
@@ -267,21 +283,25 @@ class P2PTransportEngine(
         cleanup += { runCatching { server.close() } }
         val peer = CompletableDeferred<Pair<PublishDiscoverySession, PeerHandle>>()
         var publishSession: PublishDiscoverySession? = null
-        session.publish(
-            PublishConfig.Builder()
-                .setServiceName(SERVICE_NAME)
-                .setMatchFilter(listOf(params.matchToken))
-                .build(),
-            object : DiscoverySessionCallback() {
-                override fun onPublishStarted(s: PublishDiscoverySession) { publishSession = s }
-                override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
-                    val s = publishSession ?: return
-                    if (java.security.MessageDigest.isEqual(message, params.matchToken)) peer.complete(s to peerHandle)
-                }
-                override fun onSessionTerminated() { peer.completeExceptionally(IOException("publish terminated")) }
-            },
-            handler,
-        )
+        try {
+            session.publish(
+                PublishConfig.Builder()
+                    .setServiceName(SERVICE_NAME)
+                    .setMatchFilter(listOf(params.matchToken))
+                    .build(),
+                object : DiscoverySessionCallback() {
+                    override fun onPublishStarted(s: PublishDiscoverySession) { publishSession = s }
+                    override fun onMessageReceived(peerHandle: PeerHandle, message: ByteArray) {
+                        val s = publishSession ?: return
+                        if (java.security.MessageDigest.isEqual(message, params.matchToken)) peer.complete(s to peerHandle)
+                    }
+                    override fun onSessionTerminated() { peer.completeExceptionally(IOException("publish terminated")) }
+                },
+                handler,
+            )
+        } catch (e: SecurityException) {
+            throw IOException("Wi-Fi Aware publish refused: ${e.message}", e)
+        }
         val (ps, handle) = peer.await()
         cleanup += { ps.close() }
         val spec = WifiAwareNetworkSpecifier.Builder(ps, handle)
@@ -305,21 +325,25 @@ class P2PTransportEngine(
     ): FrameLink? {
         val found = CompletableDeferred<Pair<SubscribeDiscoverySession, PeerHandle>>()
         var subscribeSession: SubscribeDiscoverySession? = null
-        session.subscribe(
-            SubscribeConfig.Builder()
-                .setServiceName(SERVICE_NAME)
-                .setMatchFilter(listOf(params.matchToken))
-                .build(),
-            object : DiscoverySessionCallback() {
-                override fun onSubscribeStarted(s: SubscribeDiscoverySession) { subscribeSession = s }
-                override fun onServiceDiscovered(peerHandle: PeerHandle, serviceSpecificInfo: ByteArray, matchFilter: List<ByteArray>) {
-                    val s = subscribeSession ?: return
-                    if (matchFilter.any { java.security.MessageDigest.isEqual(it, params.matchToken) }) found.complete(s to peerHandle)
-                }
-                override fun onSessionTerminated() { found.completeExceptionally(IOException("subscribe terminated")) }
-            },
-            handler,
-        )
+        try {
+            session.subscribe(
+                SubscribeConfig.Builder()
+                    .setServiceName(SERVICE_NAME)
+                    .setMatchFilter(listOf(params.matchToken))
+                    .build(),
+                object : DiscoverySessionCallback() {
+                    override fun onSubscribeStarted(s: SubscribeDiscoverySession) { subscribeSession = s }
+                    override fun onServiceDiscovered(peerHandle: PeerHandle, serviceSpecificInfo: ByteArray, matchFilter: List<ByteArray>) {
+                        val s = subscribeSession ?: return
+                        if (matchFilter.any { java.security.MessageDigest.isEqual(it, params.matchToken) }) found.complete(s to peerHandle)
+                    }
+                    override fun onSessionTerminated() { found.completeExceptionally(IOException("subscribe terminated")) }
+                },
+                handler,
+            )
+        } catch (e: SecurityException) {
+            throw IOException("Wi-Fi Aware subscribe refused: ${e.message}", e)
+        }
         val (ss, handle) = found.await()
         cleanup += { ss.close() }
         ss.sendMessage(handle, 1, params.matchToken)
@@ -418,5 +442,12 @@ class P2PTransportEngine(
         private const val CONNECT_TIMEOUT_MS = 20_000L
         private const val AWARE_TIMEOUT_MS = 15_000L
         private val BEACON = Regex("^zcp-[0-9a-f]{16}$")
+
+        /** Wi-Fi Aware attach/publish/subscribe need all of these (NEARBY_WIFI_DEVICES is a runtime grant). */
+        private val AWARE_PERMISSIONS = arrayOf(
+            Manifest.permission.ACCESS_WIFI_STATE,
+            Manifest.permission.CHANGE_WIFI_STATE,
+            Manifest.permission.NEARBY_WIFI_DEVICES,
+        )
     }
 }

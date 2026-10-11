@@ -150,3 +150,43 @@ jobs:
             git -c user.name="ci" -c user.email="ci@users.noreply.github.com" commit -q -m "emulator logs, run ${{ github.run_id }} (${{ github.sha }})" && \
             git push -q -f "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}" HEAD:refs/heads/ci-logs-emulator
           true
+
+  publish-apk:
+    name: Publish the installable APK (GitHub release "latest")
+    runs-on: ubuntu-latest
+    needs: [build, emulator-tests]
+    # Only builds of main that passed everything above; pull requests never publish.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zcp-map-apks
+          path: apks
+
+      - name: Replace the "latest" pre-release with this build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          apk=$(find apks -type f -name 'app-debug.apk' | head -n 1)
+          if [ -z "$apk" ]; then echo "::error::app-debug.apk missing from the build artifact"; exit 1; fi
+          cp "$apk" zcp-map-debug.apk
+          sha256sum zcp-map-debug.apk > zcp-map-debug.apk.sha256
+          cat > notes.md <<NOTES
+          Built from ${GITHUB_SHA::7} after the unit tests, lint and the emulator tests passed.
+
+          **Install (do this on both phones, Android 13 or newer):**
+          1. Open this page on the phone and tap \`zcp-map-debug.apk\`.
+          2. Allow your browser to install apps when Android asks, then tap Install.
+          3. Open ZCP-MAP, tap SELF-TEST and follow any fixes it lists.
+
+          This is a debug build signed with the project's public test key, so later builds from this
+          page install over it. It is meant for testing, not for an app store.
+          NOTES
+          gh release delete latest -R "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+          gh release create latest zcp-map-debug.apk zcp-map-debug.apk.sha256 -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --prerelease --title "ZCP-MAP latest test build (${GITHUB_SHA::7})" --notes-file notes.md

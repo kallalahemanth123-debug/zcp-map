@@ -91,7 +91,7 @@ If SELF-TEST reports that provisioned STS is unsupported, it offers a one-tap fi
   own repository fails the build on purpose. To use a library from elsewhere, add that repository in
   `settings.gradle.kts` (there is a commented example), restricted to the groups it serves.
 - Versions: Kotlin 2.4.10 (required, because LiteRT-LM is compiled with it), AGP 8.11.1,
-  Gradle 8.14.3, compileSdk 36. Bytecode target 17.
+  Gradle 8.14.5, compileSdk 36, targetSdk 36. Bytecode target 17.
 
 **Phones**
 - **Android 13+ (minSdk 33).** This allows hardware-backed Ed25519 identity keys and the

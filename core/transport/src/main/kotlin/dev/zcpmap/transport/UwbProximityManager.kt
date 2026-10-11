@@ -1,7 +1,6 @@
 package dev.zcpmap.transport
 
 import android.content.Context
-import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.uwb.RangingParameters
 import androidx.core.uwb.RangingResult
@@ -54,7 +53,8 @@ class UwbProximityManager(private val context: Context) : SecureRangingPort {
     private val manager: UwbManager by lazy { UwbManager.createInstance(context) }
 
     override val isAvailable: Boolean
-        get() = context.packageManager.hasSystemFeature(PackageManager.FEATURE_UWB)
+        // PackageManager.FEATURE_UWB is only public from API 34; the feature string itself exists since API 31.
+        get() = context.packageManager.hasSystemFeature(FEATURE_UWB)
 
     /** What this phone's UWB stack supports; used by the in-app self-test. Never throws. */
     suspend fun probe(): UwbProbe {
@@ -156,5 +156,6 @@ class UwbProximityManager(private val context: Context) : SecureRangingPort {
 
     companion object {
         private const val TAG = "ZcpUwb"
+        private const val FEATURE_UWB = "android.hardware.uwb"
     }
 }

@@ -4,11 +4,17 @@
      certificate, but the app itself refuses http:// to anything outside the local network
      (loopback, RFC 1918, link-local, Tailscale CGNAT, IPv6 ULA) — see LocalNetworkPolicy.
      User-installed CAs are trusted so a self-signed certificate on your own server works with https://. -->
-<network-security-config>
-    <base-config cleartextTrafficPermitted="true">
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <!-- Lint flags both choices below; they are deliberate for a self-hosted model server and are
+         bounded by LocalNetworkPolicy in code (no cleartext to non-local addresses, ever). -->
+    <base-config
+        cleartextTrafficPermitted="true"
+        tools:ignore="InsecureBaseConfiguration">
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
+            <certificates
+                src="user"
+                tools:ignore="AcceptsUserCertificates" />
         </trust-anchors>
     </base-config>
 </network-security-config>

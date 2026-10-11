@@ -11,10 +11,23 @@ android {
     defaultConfig {
         applicationId = "dev.zcpmap.app"
         minSdk = 33          // Keystore Ed25519 (KeyMint 2), NEARBY_WIFI_DEVICES, UWB on all shipping devices
-        targetSdk = 35
-        versionCode = 2
-        versionName = "2.0.0"
+        targetSdk = 36
+        versionCode = 3
+        versionName = "2.0.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        // Committed on purpose: every machine (and every CI run) signs debug APKs with this same key,
+        // so a newer debug APK installs over an older one instead of failing with a signature mismatch.
+        // It is a public test key. Release builds are left unsigned; sign them with your own key.
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storeType = "PKCS12"
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -25,6 +38,7 @@ android {
         }
         debug {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
 

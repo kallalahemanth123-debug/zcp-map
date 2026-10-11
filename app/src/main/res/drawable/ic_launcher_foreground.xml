@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher icon: a radar scope (rings, crosshair, sweep) with two peers. Kept inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#39FF9E"
+        android:fillAlpha="0.32"
+        android:pathData="M54,54 L54,26 A28,28 0 0,1 78.25,40 Z" />
+    <path
+        android:strokeColor="#39FF9E"
+        android:strokeWidth="2.2"
+        android:fillColor="#00000000"
+        android:pathData="M54,26 A28,28 0 1,1 54,82 A28,28 0 1,1 54,26 Z" />
+    <path
+        android:strokeColor="#39FF9E"
+        android:strokeAlpha="0.6"
+        android:strokeWidth="1.6"
+        android:fillColor="#00000000"
+        android:pathData="M54,37 A17,17 0 1,1 54,71 A17,17 0 1,1 54,37 Z" />
+    <path
+        android:strokeColor="#39FF9E"
+        android:strokeAlpha="0.45"
+        android:strokeWidth="1.2"
+        android:pathData="M54,24 L54,84 M24,54 L84,54" />
+    <path
+        android:strokeColor="#39FF9E"
+        android:strokeWidth="2.2"
+        android:pathData="M54,54 L78.25,40" />
+    <path
+        android:fillColor="#39FF9E"
+        android:pathData="M54,51 A3,3 0 1,1 54,57 A3,3 0 1,1 54,51 Z" />
+    <path
+        android:fillColor="#39FF9E"
+        android:pathData="M68,34.5 A3.5,3.5 0 1,1 68,41.5 A3.5,3.5 0 1,1 68,34.5 Z" />
+    <path
+        android:fillColor="#3AD7FF"
+        android:pathData="M41,62 A3,3 0 1,1 41,68 A3,3 0 1,1 41,62 Z" />
+</vector>
