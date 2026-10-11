@@ -39,7 +39,7 @@ class AppInstrumentedTest {
     }
 
     @Test
-    fun nodeBootsWithRuleAgentAndIdentitySigns() = runBlocking {
+    fun nodeBootsWithRuleAgentAndIdentitySigns(): Unit = runBlocking {
         val g = NodeGraph.create(context, AgentSettings(mode = AgentMode.RULES))
         try {
             val msg = "boot".toByteArray()
@@ -52,7 +52,7 @@ class AppInstrumentedTest {
     }
 
     @Test
-    fun selfTestProducesAFullReport() = runBlocking {
+    fun selfTestProducesAFullReport(): Unit = runBlocking {
         val g = NodeGraph.create(context, AgentSettings())
         try {
             val checks = DeviceSelfTest.run(context, g, AgentSettings())
@@ -66,7 +66,7 @@ class AppInstrumentedTest {
     }
 
     @Test
-    fun onDeviceModeWithoutModelFailsCleanly() = runBlocking {
+    fun onDeviceModeWithoutModelFailsCleanly(): Unit = runBlocking {
         val engine = LiteRtLmEngine(File(context.cacheDir, "missing.litertlm"), useGpu = false, maxNumTokens = 4096, cacheDir = context.cacheDir)
         val backend = OnDeviceBackend(engine, nativeTools = false)
         val out = backend.complete("system", listOf(ChatItem.User("hello")), ToolCatalog.all)

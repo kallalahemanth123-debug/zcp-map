@@ -119,7 +119,7 @@ class OpenAiCompatibleBackendTest {
     )
 
     @Test
-    fun nativeRequestShapeMatchesOpenAiFormat() = runBlocking {
+    fun nativeRequestShapeMatchesOpenAiFormat(): Unit = runBlocking {
         val http = ScriptedHttp(listOf({ _ -> ScriptedHttp.chat("No peers.") }))
         val b = OpenAiCompatibleBackend(cfg, http)
         val out = b.complete("SYS", history, ToolCatalog.all)
@@ -145,7 +145,7 @@ class OpenAiCompatibleBackendTest {
     }
 
     @Test
-    fun parsesOllamaStyleToolCallsWithStringArguments() = runBlocking {
+    fun parsesOllamaStyleToolCallsWithStringArguments(): Unit = runBlocking {
         val calls = "[{\"id\":\"call_abc\",\"index\":0,\"type\":\"function\",\"function\":{\"name\":\"initiate_secure_handshake\",\"arguments\":\"{\\\"peer_id\\\":\\\"peer-0011223344556677\\\"}\"}}]"
         val http = ScriptedHttp(listOf({ _ -> ScriptedHttp.chat("", calls, "tool_calls") }))
         val out = OpenAiCompatibleBackend(cfg, http).complete("SYS", history, ToolCatalog.all)
@@ -157,7 +157,7 @@ class OpenAiCompatibleBackendTest {
     }
 
     @Test
-    fun fallsBackToTextProtocolWhenModelHasNoToolSupport() = runBlocking {
+    fun fallsBackToTextProtocolWhenModelHasNoToolSupport(): Unit = runBlocking {
         val http = ScriptedHttp(listOf(
             { _ -> HttpReply(400, "{\"error\":{\"message\":\"registry.ollama.ai/library/gemma2:2b does not support tools\"}}", null) },
             { _ -> ScriptedHttp.chat("<tool_call>{\"name\":\"scan_and_verify_uwb_peers\",\"arguments\":{}}</tool_call>") },
@@ -176,7 +176,7 @@ class OpenAiCompatibleBackendTest {
     }
 
     @Test
-    fun errorMapping() = runBlocking {
+    fun errorMapping(): Unit = runBlocking {
         fun outcome(r: HttpReply) = runBlocking { OpenAiCompatibleBackend(cfg, ScriptedHttp(listOf({ _ -> r }))).complete("S", history, ToolCatalog.all) }
         assertIs<BackendOutcome.Fatal>(outcome(HttpReply(404, "{\"error\":\"model 'x' not found\"}", null)))
         assertIs<BackendOutcome.Fatal>(outcome(HttpReply(401, "unauthorized", null)))
@@ -190,7 +190,7 @@ class OpenAiCompatibleBackendTest {
 
     /** Real sockets: a local HTTP server speaking the OpenAI format, reached through UrlConnectionTransport. */
     @Test
-    fun realHttpRoundTripOverLoopback() = runBlocking {
+    fun realHttpRoundTripOverLoopback(): Unit = runBlocking {
         val server = HttpServer.create(InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0)
         val seen = CopyOnWriteArrayList<String>()
         server.createContext("/v1/chat/completions") { ex ->
@@ -232,7 +232,7 @@ class FakeEngine(private val replies: ArrayDeque<EngineReply>) : LocalLlmEngine 
 
 class OnDeviceBackendTest {
     @Test
-    fun textProtocolSendsOnlyNewMessagesAndRestartsAfterReset() = runBlocking {
+    fun textProtocolSendsOnlyNewMessagesAndRestartsAfterReset(): Unit = runBlocking {
         val engine = FakeEngine(ArrayDeque(listOf(
             EngineReply("<tool_call>{\"name\":\"scan_and_verify_uwb_peers\",\"arguments\":{}}</tool_call>", emptyList()),
             EngineReply("No peers nearby.", emptyList()),
@@ -258,7 +258,7 @@ class OnDeviceBackendTest {
     }
 
     @Test
-    fun nativeToolsUseToolResponsesAndReplayHistory() = runBlocking {
+    fun nativeToolsUseToolResponsesAndReplayHistory(): Unit = runBlocking {
         val args = buildJsonObject { put("peer_id", "peer-0011223344556677") }
         val engine = FakeEngine(ArrayDeque(listOf(
             EngineReply("", listOf(EngineToolCall(ToolCatalog.HANDSHAKE, args))),
@@ -285,7 +285,7 @@ class OnDeviceBackendTest {
     }
 
     @Test
-    fun engineErrorsMapToOutcomes() = runBlocking {
+    fun engineErrorsMapToOutcomes(): Unit = runBlocking {
         val engine = FakeEngine(ArrayDeque())
         val b = OnDeviceBackend(engine, nativeTools = false)
         engine.failNext = LocalEngineException("no model file imported", recoverable = false)

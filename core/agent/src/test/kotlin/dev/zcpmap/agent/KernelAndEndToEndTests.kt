@@ -73,7 +73,7 @@ class AgentKernelTest {
         AgentKernel(c, ToolRouter(c, SecurityAirlock(c)), b, KernelConfig(observationDebounceMillis = 50, maxRetries = 2), events, scope, clock = { c.now }, random = java.util.Random(1))
 
     @Test
-    fun toolLoopOrdersResultsAndFeedsBackAirlockDenials() = runBlocking {
+    fun toolLoopOrdersResultsAndFeedsBackAirlockDenials(): Unit = runBlocking {
         val c = FakeMeshControl()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val b = ScriptedBackend { i, _ ->
@@ -111,7 +111,7 @@ class AgentKernelTest {
     }
 
     @Test
-    fun peerTextOnlyInsideEnvelopesAndCompactPromptForSmallModels() = runBlocking {
+    fun peerTextOnlyInsideEnvelopesAndCompactPromptForSmallModels(): Unit = runBlocking {
         val c = FakeMeshControl()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val b = ScriptedBackend(prefersCompactPrompt = true) { _, _ -> ScriptedBackend.text("noted") }
@@ -136,7 +136,7 @@ class AgentKernelTest {
     }
 
     @Test
-    fun refusedTranscriptIsRebuiltOnceThenFaultsAndDirectiveClearsFault() = runBlocking {
+    fun refusedTranscriptIsRebuiltOnceThenFaultsAndDirectiveClearsFault(): Unit = runBlocking {
         val c = FakeMeshControl()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val b = ScriptedBackend { i, _ -> if (i < 2) BackendOutcome.TranscriptRejected("too long") else ScriptedBackend.text("back") }
@@ -158,7 +158,7 @@ class AgentKernelTest {
     }
 
     @Test
-    fun fatalBackendErrorFaultsWithoutTouchingMesh() = runBlocking {
+    fun fatalBackendErrorFaultsWithoutTouchingMesh(): Unit = runBlocking {
         val c = FakeMeshControl()
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val b = ScriptedBackend { _, _ -> BackendOutcome.Fatal("no model file imported") }
@@ -203,7 +203,7 @@ class EndToEndAgentTest {
 
     /** A model-driven agent (scripted backend standing in for the on-device model / own server). */
     @Test
-    fun modelAgentNegotiatesAndStreamsOverRealStack() = runBlocking {
+    fun modelAgentNegotiatesAndStreamsOverRealStack(): Unit = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val net = InMemoryNetwork()
         val alpha = NodeUnderTest("alpha", net, scope)
@@ -264,7 +264,7 @@ class EndToEndAgentTest {
 
     /** Both phones on the rule-based agent: one typed command moves a file end to end, no model anywhere. */
     @Test
-    fun ruleBasedAgentsShareAFileWithOneCommand() = runBlocking {
+    fun ruleBasedAgentsShareAFileWithOneCommand(): Unit = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val net = InMemoryNetwork()
         val alpha = NodeUnderTest("alpha", net, scope)
@@ -298,7 +298,7 @@ class EndToEndAgentTest {
     }
 
     @Test
-    fun ruleBasedAgentRejectsWhatPolicyForbids() = runBlocking {
+    fun ruleBasedAgentRejectsWhatPolicyForbids(): Unit = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val net = InMemoryNetwork()
         val alpha = NodeUnderTest("alpha", net, scope)

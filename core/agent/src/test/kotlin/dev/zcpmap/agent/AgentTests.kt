@@ -170,7 +170,7 @@ class SecurityAirlockTest {
     }
 
     @Test
-    fun repeatedViolationsEscalateToTeardown() = runBlocking {
+    fun repeatedViolationsEscalateToTeardown(): Unit = runBlocking {
         val c = FakeMeshControl()
         val router = ToolRouter(c, SecurityAirlock(c, maxCallsPerTurn = 100))
         repeat(2) { assertTrue(router.call(ToolCatalog.PROPOSE, proposeArgs(c.peer, summary = "https://x.example")).airlockDenied) }
@@ -202,7 +202,7 @@ class SecurityAirlockTest {
 
 class McpServerTest {
     @Test
-    fun jsonRpcLifecycle() = runBlocking {
+    fun jsonRpcLifecycle(): Unit = runBlocking {
         val c = FakeMeshControl()
         val s = McpServer(ToolRouter(c, SecurityAirlock(c)))
         assertTrue(s.handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}")!!.contains("-32002"))
