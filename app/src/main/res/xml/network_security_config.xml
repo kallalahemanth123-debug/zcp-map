@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The only HTTP traffic this app makes is to the operator's own model server ("My own server" mode).
+     Plain http:// is permitted at this layer because home servers (Ollama, LM Studio) usually have no
+     certificate, but the app itself refuses http:// to anything outside the local network
+     (loopback, RFC 1918, link-local, Tailscale CGNAT, IPv6 ULA) — see LocalNetworkPolicy.
+     User-installed CAs are trusted so a self-signed certificate on your own server works with https://. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
