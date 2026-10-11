@@ -97,11 +97,22 @@ object AndroidKeystoreIdentity {
         false
     }
 
-    private fun nativeSigner(ks: KeyStore): IdentitySigner? {
-        val entry = ks.getEntry(NATIVE_ALIAS, null) as? KeyStore.PrivateKeyEntry ?: return null
-        val priv = entry.privateKey
-        val spki = entry.certificate.publicKey.encoded
-        if (spki.size != 44) return null // 12-byte Ed25519 SPKI prefix + 32-byte key
+    private fun nativeSigner(ks: KeyStore): IdentitySigner? = try {
+        buildNativeSigner(ks)
+    } catch (e: Exception) {
+        // Any Keystore quirk on this build means "native Ed25519 not usable here": the caller deletes the
+        // alias and falls back to the sealed identity instead of crashing the app at start-up.
+        Log.w(TAG, "native Ed25519 identity unusable: ${e.javaClass.simpleName}: ${e.message}")
+        null
+    }
+
+    private fun buildNativeSigner(ks: KeyStore): IdentitySigner? {
+        // Not KeyStore.getEntry(): on Android 13/14 the Keystore reports different algorithm names for the
+        // Ed25519 private key and for its certificate's public key, and the PrivateKeyEntry constructor
+        // rejects that with IllegalArgumentException (seen on the API 34 emulator). Read the parts separately.
+        val priv = ks.getKey(NATIVE_ALIAS, null) as? PrivateKey ?: return null
+        val spki = ks.getCertificate(NATIVE_ALIAS)?.publicKey?.encoded ?: return null
+        if (spki.size != 44 || !spki.copyOfRange(0, 12).contentEquals(ED25519_SPKI_PREFIX)) return null
         val raw = spki.copyOfRange(12, 44)
         val level = when (securityLevel(priv)) {
             KeyProperties.SECURITY_LEVEL_STRONGBOX -> IdentitySecurityLevel.STRONGBOX_NATIVE
@@ -232,6 +243,11 @@ object AndroidKeystoreIdentity {
     }
 
     private val AAD = "ZCP1-IDENTITY-SEAL-v1".toByteArray()
+
+    /** DER SubjectPublicKeyInfo header for Ed25519 (OID 1.3.101.112), followed by the 32-byte key. */
+    private val ED25519_SPKI_PREFIX = byteArrayOf(
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    )
 }
 
 /**
