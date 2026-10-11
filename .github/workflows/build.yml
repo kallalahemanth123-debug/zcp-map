@@ -24,6 +24,9 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Make the Gradle wrapper executable (lost when files come from Windows or a zip)
+        run: chmod +x gradlew
+
       - name: JVM unit tests (protocol, security, mesh, agent)
         run: ./gradlew --stacktrace :core:protocol:test :core:security:test :core:mesh:test :core:agent:test
 
@@ -68,6 +71,9 @@ jobs:
           java-version: "17"
 
       - uses: gradle/actions/setup-gradle@v4
+
+      - name: Make the Gradle wrapper executable
+        run: chmod +x gradlew
 
       - name: Enable KVM
         run: |
