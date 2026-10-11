@@ -50,7 +50,7 @@ class LiteRtLmEngine(
     private val maxNumTokens: Int,
     private val cacheDir: File,
 ) : LocalLlmEngine {
-    override val modelName: String = modelFile.nameWithoutExtension.take(40)
+    override val modelName: String get() = modelFile.nameWithoutExtension.take(40) + if (engine != null) " · $activeBackend".take(60) else ""
 
     private val executor: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "zcp-llm").apply { isDaemon = true } }
     @Volatile private var engine: Engine? = null
@@ -94,25 +94,50 @@ class LiteRtLmEngine(
 
     // ------------------------------------------------------------------ internals
 
+    /** "GPU", "CPU", or "CPU (GPU failed)" once loaded; shown in the agent label and the self-test. */
+    @Volatile var activeBackend: String = "not loaded"
+        private set
+
     private fun ensureEngine(): Engine {
         engine?.let { return it }
         if (!modelFile.isFile) {
             throw LocalEngineException("No on-device model imported. Open SETUP and import a .litertlm file.", recoverable = false)
         }
+        var gpuError: Throwable? = null
+        if (useGpu) {
+            try {
+                return load(Backend.GPU()).also { engine = it; activeBackend = "GPU" }
+            } catch (t: Throwable) {
+                // Not every GPU/driver supports LiteRT-LM: fall back to the CPU automatically.
+                gpuError = t
+            }
+        }
         val e = try {
-            Engine(
-                EngineConfig(
-                    modelPath = modelFile.absolutePath,
-                    backend = if (useGpu) Backend.GPU() else Backend.CPU(),
-                    maxNumTokens = maxNumTokens,
-                    cacheDir = cacheDir.absolutePath,
-                ),
-            ).also { it.initialize() }
+            load(Backend.CPU())
         } catch (t: Throwable) {
             throw LocalEngineException("Could not load ${modelFile.name}: ${t.message ?: t.javaClass.simpleName}. " +
-                "Check that it is a .litertlm file and that the phone has enough free memory; try CPU instead of GPU.", recoverable = false, t)
+                "Check that it is a .litertlm file built for phones and that enough memory is free.", recoverable = false, t)
         }
         engine = e
+        activeBackend = if (gpuError != null) "CPU (GPU failed: ${gpuError.message?.take(80) ?: gpuError.javaClass.simpleName})" else "CPU"
+        return e
+    }
+
+    private fun load(backend: Backend): Engine {
+        val e = Engine(
+            EngineConfig(
+                modelPath = modelFile.absolutePath,
+                backend = backend,
+                maxNumTokens = maxNumTokens,
+                cacheDir = cacheDir.absolutePath,
+            ),
+        )
+        try {
+            e.initialize()
+        } catch (t: Throwable) {
+            try { e.close() } catch (_: Throwable) {}
+            throw t
+        }
         return e
     }
 

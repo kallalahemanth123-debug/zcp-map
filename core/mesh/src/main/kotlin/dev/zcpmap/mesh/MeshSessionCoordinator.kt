@@ -219,7 +219,7 @@ class MeshSessionCoordinator(
     fun evaluate(contractId: String): MeshCommandResult<EvaluationReport> {
         val c = contracts[contractId] ?: return MeshCommandResult.Failed("unknown contract")
         val s = sessions[c.peerId] ?: return MeshCommandResult.Failed("no live session for contract peer")
-        return MeshCommandResult.Ok(evaluator.evaluate(c, device.current(), s.peerManifest, nowSeconds()))
+        return MeshCommandResult.Ok(evaluator.evaluate(c, device.current(), s.peerManifest, nowSeconds(), s.distanceProof()))
     }
 
     private fun acceptInbound(ev: DiscoveryEvent.InboundLink) {
@@ -825,7 +825,7 @@ class MeshSessionCoordinator(
                 status = ContractStatus.PROPOSED, createdAtSeconds = now,
                 expiresAtSeconds = now + policy.contractTtlSeconds, counterOf = counterOf,
             )
-            val report = evaluator.evaluate(record, device.current(), peerManifest, now)
+            val report = evaluator.evaluate(record, device.current(), peerManifest, now, distanceProof())
             if (report.verdict == Feasibility.INFEASIBLE) {
                 return@withLock MeshCommandResult.Failed("infeasible: " + report.reasons.joinToString("; "))
             }
@@ -860,7 +860,7 @@ class MeshSessionCoordinator(
                 if (contractId !in st.openContractIds) return MeshCommandResult.Failed("contract is no longer open")
                 when (decision) {
                     ContractDecision.ACCEPT -> {
-                        val report = evaluator.evaluate(c, device.current(), peerManifest, nowSeconds())
+                        val report = evaluator.evaluate(c, device.current(), peerManifest, nowSeconds(), distanceProof())
                         when (report.verdict) {
                             Feasibility.INFEASIBLE -> return MeshCommandResult.Failed("infeasible: " + report.reasons.joinToString("; "))
                             Feasibility.NEEDS_USER_APPROVAL -> if (!userApproved) {
@@ -1467,6 +1467,9 @@ class MeshSessionCoordinator(
         }
 
         // ------------------------------------------------------------------ views
+
+        /** true = provisioned STS bound, false = static STS bound, null = no UWB distance bound. */
+        fun distanceProof(): Boolean? = if ((boundDistance ?: -1.0) >= 0) provisionedSts else null
 
         fun attestation(): SessionAttestation {
             val st = state

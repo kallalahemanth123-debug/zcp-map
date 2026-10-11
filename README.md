@@ -62,12 +62,11 @@ tool format automatically.
 3. **Two phones:** add a file with **+ FILE** on phone A, switch both ONLINE, hold them within the
    radius, type `share <file>` (rule mode) or an instruction (model modes).
 
-If SELF-TEST reports that provisioned STS is unsupported, either use phones that support it or turn
-off *Require provisioned STS* in SETUP (weaker: a relay attacker can fake proximity).
+If SELF-TEST reports that provisioned STS is unsupported, it offers a one-tap fix (see below).
 
 ## Verification status
 
-- **JVM modules:** 68 tests pass with Kotlin 2.4.10 (same compiler as the real build). They cover
+- **JVM modules:** 69 tests pass with Kotlin 2.4.10 (same compiler as the real build). They cover
   RFC test vectors, the Noise XX handshake (also checked against an independent Python
   implementation), two-phone mesh simulations including attack cases, the airlock, both model
   backends (including a real HTTP round trip), and end-to-end runs where a model-driven agent and
@@ -79,7 +78,31 @@ off *Require provisioned STS* in SETUP (weaker: a relay attacker can fake proxim
 - **Not automatable:** UWB ranging, Nearby and Wi-Fi Aware between two physical phones. Use
   SELF-TEST and the two-phone steps above.
 
-## Build notes
+## Requirements and known constraints
 
-Kotlin 2.4.10 (required: LiteRT-LM is compiled with it), AGP 8.11.1, Gradle 8.14.3, compileSdk 36,
-minSdk 33. Bytecode target 17; Gradle runs on JDK 17 or 21.
+**Building**
+- **JDK 17 or 21.** Android Studio's bundled JDK (jbr-21) works out of the box. If Gradle is started
+  on an older Java, or on a runtime without a compiler, `settings.gradle.kts` stops in the first
+  second with instructions (tested with Java 11). The JDK is not downloaded automatically on purpose:
+  it keeps the build free of extra download sources.
+- **`gradle/libs.versions.toml`** holds every version (the `libs.` aliases). If it is missing, the
+  build stops immediately and says so.
+- **Repositories:** only Google Maven and Maven Central are allowed, and a module that declares its
+  own repository fails the build on purpose. To use a library from elsewhere, add that repository in
+  `settings.gradle.kts` (there is a commented example), restricted to the groups it serves.
+- Versions: Kotlin 2.4.10 (required, because LiteRT-LM is compiled with it), AGP 8.11.1,
+  Gradle 8.14.3, compileSdk 36. Bytecode target 17.
+
+**Phones**
+- **Android 13+ (minSdk 33).** This allows hardware-backed Ed25519 identity keys and the
+  `NEARBY_WIFI_DEVICES` permission model. Nearly every UWB Android phone has been updated to
+  Android 13 or later, and the UWB library itself already requires Android 12.
+- **UWB is required for distance bounding.** Phones without UWB cannot form sessions (SELF-TEST
+  reports this).
+- **Provisioned STS (relay-proof distance).** If a phone's UWB chip lacks it, SELF-TEST shows a
+  one-tap fix: allow such phones, with every transfer to or from them waiting for your APPROVE tap.
+  The security reduction is visible and bounded, not silent. Phones that do support it are
+  unaffected.
+- **On-device model GPU.** "Try GPU first" falls back to the CPU automatically if the phone's GPU
+  driver is unsupported; the agent label shows which one is in use. CPU is the default.
+- **Clock:** phones must agree on the time within about a minute (automatic time on; SELF-TEST checks).

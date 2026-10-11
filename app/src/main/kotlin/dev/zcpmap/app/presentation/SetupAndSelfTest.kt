@@ -90,7 +90,7 @@ internal fun SetupDialog(
                         }
                         OutlinedButton(onClick = onImportModel, enabled = importState !is ImportState.Copying) { Mono("IMPORT MODEL FILE", Tac.text, 10, FontWeight.Bold) }
                         Field("Context tokens (must match the model file)", deviceCtx, number = true) { deviceCtx = it }
-                        Toggle("Use GPU (faster; turn off if loading fails)", deviceGpu) { deviceGpu = it }
+                        Toggle("Try GPU first (falls back to CPU automatically)", deviceGpu) { deviceGpu = it }
                         Toggle("Model has native tool calling (FunctionGemma, Gemma 3n)", deviceNative) { deviceNative = it }
                     }
                     AgentMode.OWN_SERVER -> {
@@ -104,8 +104,8 @@ internal fun SetupDialog(
                 Spacer(Modifier.height(4.dp))
                 Mono("MESH", Tac.dim, 10, FontWeight.Bold)
                 Field("Distance bound radius (m)", radius, number = true) { radius = it }
-                Toggle("Require provisioned STS (relay-proof UWB)", requirePsts) { requirePsts = it }
-                if (!requirePsts) Mono("Warning: without provisioned STS a relay attacker can fake proximity.", Tac.amber, 10)
+                Toggle("Only allow phones with provisioned STS (relay-proof distance)", requirePsts) { requirePsts = it }
+                if (!requirePsts) Mono("Phones without it can connect, but their distance could be faked by a relay, so every transfer with them waits for your APPROVE tap.", Tac.amber, 10)
                 errors.forEach { Mono("• $it", Tac.red, 10) }
             }
         },
@@ -151,7 +151,7 @@ private fun Field(label: String, value: String, number: Boolean = false, secret:
 }
 
 @Composable
-internal fun SelfTestDialog(checks: List<SelfCheck>, onClose: () -> Unit) {
+internal fun SelfTestDialog(checks: List<SelfCheck>, onAction: (dev.zcpmap.app.platform.SelfAction) -> Unit, onClose: () -> Unit) {
     val fails = checks.count { it.level == CheckLevel.FAIL }
     val warns = checks.count { it.level == CheckLevel.WARN }
     AlertDialog(
@@ -171,6 +171,9 @@ internal fun SelfTestDialog(checks: List<SelfCheck>, onClose: () -> Unit) {
                         Mono("${c.level.name.padEnd(4)}  ${c.name}", color, 11, FontWeight.Bold)
                         Mono(c.detail, Tac.text, 10)
                         c.fix?.let { Mono("fix: $it", Tac.dim, 10) }
+                        c.action?.let { a ->
+                            OutlinedButton(onClick = { onAction(a) }) { Mono(a.label, Tac.amber, 10, FontWeight.Bold) }
+                        }
                     }
                 }
                 Mono("Run this on both phones. Then switch both ONLINE and hold them within the radius.", Tac.dim, 10)

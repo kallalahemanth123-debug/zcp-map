@@ -189,7 +189,7 @@ fun MeshTerminalScreen(vm: MeshAgentViewModel) {
                     onClose = { showSetup = false },
                 )
             }
-            state.selfTest?.let { SelfTestDialog(it, onClose = vm::dismissSelfTest) }
+            state.selfTest?.let { SelfTestDialog(it, onAction = vm::applySelfTestAction, onClose = vm::dismissSelfTest) }
         }
     }
 }

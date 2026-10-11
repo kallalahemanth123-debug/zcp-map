@@ -104,6 +104,8 @@ class ContractEvaluator(private val policy: MeshPolicy) {
         device: DeviceConstraints,
         peerManifest: CapabilityManifest?,
         nowSeconds: Long,
+        /** true = provisioned STS, false = static STS, null = no distance proof at all. */
+        provisionedSts: Boolean? = true,
     ): EvaluationReport {
         val hard = ArrayList<String>()
         val soft = ArrayList<String>()
@@ -135,6 +137,9 @@ class ContractEvaluator(private val policy: MeshPolicy) {
             }
         }
         if (t.maxBytes > policy.userApprovalAboveBytes) soft += "transfer above ${policy.userApprovalAboveBytes} bytes requires user approval"
+        if (provisionedSts != true && policy.approveContractsWithoutProvisionedSts) {
+            soft += "peer distance is not cryptographically proven (no provisioned STS) — your approval is required"
+        }
         val verdict = when {
             hard.isNotEmpty() -> Feasibility.INFEASIBLE
             soft.isNotEmpty() -> Feasibility.NEEDS_USER_APPROVAL

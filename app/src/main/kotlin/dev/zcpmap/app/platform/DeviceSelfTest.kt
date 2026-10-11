@@ -28,7 +28,18 @@ import java.net.URI
 
 enum class CheckLevel { PASS, WARN, FAIL }
 
-data class SelfCheck(val name: String, val level: CheckLevel, val detail: String, val fix: String? = null)
+/** A fix the app can apply itself when the operator taps the button next to a failed check. */
+enum class SelfAction(val label: String) {
+    ALLOW_STATIC_STS_WITH_APPROVAL("ALLOW — I'LL APPROVE EACH TRANSFER"),
+}
+
+data class SelfCheck(
+    val name: String,
+    val level: CheckLevel,
+    val detail: String,
+    val fix: String? = null,
+    val action: SelfAction? = null,
+)
 
 /**
  * Everything that can stop two phones from working together, checked on the real device in a few
@@ -78,9 +89,11 @@ object DeviceSelfTest {
             out += when {
                 uwb.provisionedSts -> SelfCheck("Secure ranging (provisioned STS)", CheckLevel.PASS, "supported — relay-resistant distance bounding")
                 settings.requireProvisionedSts -> SelfCheck("Secure ranging (provisioned STS)", CheckLevel.FAIL,
-                    "not supported by this phone's UWB stack, and SETUP requires it — every handshake will be refused",
-                    "SETUP → turn off 'Require provisioned STS' (weaker: no protection against relay attacks)")
-                else -> SelfCheck("Secure ranging (provisioned STS)", CheckLevel.WARN, "not supported; using static STS (no relay protection)")
+                    "not supported by this phone's UWB chip, so every handshake is refused right now",
+                    "Tap below to allow it anyway. Distance is then not relay-proof, so the app will ask you to approve every transfer with such a phone.",
+                    SelfAction.ALLOW_STATIC_STS_WITH_APPROVAL)
+                else -> SelfCheck("Secure ranging (provisioned STS)", CheckLevel.WARN,
+                    "not supported; static STS allowed — every transfer with this phone needs your tap")
             }
         }
 

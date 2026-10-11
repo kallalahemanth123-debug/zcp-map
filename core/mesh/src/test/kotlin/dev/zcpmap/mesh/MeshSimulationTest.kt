@@ -22,7 +22,7 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-private class Node(name: String, net: InMemoryNetwork, distance: Double, scope: CoroutineScope, psts: Boolean = true) {
+private class Node(name: String, net: InMemoryNetwork, distance: Double, scope: CoroutineScope, psts: Boolean = true, requirePsts: Boolean = true) {
     val dir: File = Files.createTempDirectory("zcp-$name").toFile()
     val transport = FakeTransport(name, net)
     val ranging = FakeRanging(distance, psts)
@@ -33,7 +33,7 @@ private class Node(name: String, net: InMemoryNetwork, distance: Double, scope: 
         rotator = StaticKeyRotator(signer, System::currentTimeMillis),
         sandbox = sandbox,
         device = { DeviceConstraints(80, true, ThermalLevel.NOMINAL, 50L shl 30) },
-        policy = MeshPolicy(storageReserveBytes = 1L shl 20, rangingWindowMillis = 4_000),
+        policy = MeshPolicy(storageReserveBytes = 1L shl 20, rangingWindowMillis = 4_000, requireProvisionedSts = requirePsts),
         agentModel = "local-agent",
         scope = scope,
     )
@@ -42,11 +42,11 @@ private class Node(name: String, net: InMemoryNetwork, distance: Double, scope: 
 }
 
 class MeshSimulationTest {
-    private fun withPair(distA: Double, distB: Double, pstsB: Boolean = true, block: suspend (Node, Node, CoroutineScope) -> Unit) = runBlocking {
+    private fun withPair(distA: Double, distB: Double, pstsB: Boolean = true, requirePsts: Boolean = true, block: suspend (Node, Node, CoroutineScope) -> Unit) = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val net = InMemoryNetwork()
-        val a = Node("alpha", net, distA, scope)
-        val b = Node("bravo", net, distB, scope, pstsB)
+        val a = Node("alpha", net, distA, scope, requirePsts = requirePsts)
+        val b = Node("bravo", net, distB, scope, pstsB, requirePsts)
         listOf(a, b).forEach { n ->
             scope.launch { n.mesh.events.collect { e -> if (e is MeshEvent.SecurityAlert) n.alerts += e; if (e is MeshEvent.ContractProposed) n.proposals += e } }
         }
@@ -137,6 +137,25 @@ class MeshSimulationTest {
     fun staticStsIsRefusedByPolicy() = withPair(1.0, 1.0, pstsB = false) { a, _, _ ->
         assertIs<MeshCommandResult.Failed>(a.mesh.initiateHandshake(a.mesh.discoveredPeerIds().single()))
         waitFor { a.alerts.any { it.reason == TeardownReason.POLICY_VIOLATION } }
+    }
+
+    @Test
+    fun staticStsAllowedButEveryContractNeedsAHumanTap() = withPair(1.0, 1.0, pstsB = false, requirePsts = false) { a, b, _ ->
+        val bId = a.mesh.discoveredPeerIds().single()
+        val att = a.mesh.initiateHandshake(bId)
+        assertIs<MeshCommandResult.Ok<SessionAttestation>>(att)
+        assertEquals(false, a.mesh.peers.value[bId]!!.provisionedSts)
+        val p = a.mesh.proposeContract(bId, ContractTerms(TaskType.FILE_SHARE, TransferDirection.PROPOSER_SENDS, 100, 0, 60, 0, "small file"))
+        val cid = (p as MeshCommandResult.Ok).value.contractId
+        waitFor { b.proposals.any { it.contract.contractId == cid } }
+        val eval = b.mesh.evaluate(cid)
+        assertEquals(Feasibility.NEEDS_USER_APPROVAL, (eval as MeshCommandResult.Ok).value.verdict)
+        val parked = b.mesh.respondToContract(cid, ContractDecision.ACCEPT, "ok", null)
+        assertEquals(ContractStatus.AWAITING_USER_APPROVAL, (parked as MeshCommandResult.Ok).value.status)
+        assertEquals(ContractStatus.PROPOSED, a.mesh.contract(cid)!!.status, "nothing is accepted until the human taps")
+        val approval = b.mesh.approvals.value.single()
+        assertIs<MeshCommandResult.Ok<ContractRecord>>(b.mesh.resolveApproval(approval.approvalId, approve = true))
+        waitFor { a.mesh.contract(cid)?.status == ContractStatus.ACCEPTED }
     }
 
     @Test

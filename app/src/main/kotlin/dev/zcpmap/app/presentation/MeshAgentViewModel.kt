@@ -330,6 +330,33 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Applies the fix offered by a failed self-test check, then re-runs the test. */
+    fun applySelfTestAction(action: dev.zcpmap.app.platform.SelfAction) {
+        if (running.value) {
+            appendMesh(LogTone.ALERT, "switch the mesh OFFLINE first, then tap the fix again", null)
+            return
+        }
+        val updated = when (action) {
+            dev.zcpmap.app.platform.SelfAction.ALLOW_STATIC_STS_WITH_APPROVAL -> settings.value.copy(requireProvisionedSts = false)
+        }
+        store.save(updated)
+        settings.value = updated
+        viewModelScope.launch {
+            graph.value?.shutdown()
+            graph.value = null
+            try {
+                val g = NodeGraph.create(getApplication(), updated)
+                graph.value = g
+                boot.value = BootState.Ready(g.coordinator.localFingerprint, g.identity.securityLevel.label, g.identity.securityLevel.hardwareBacked)
+                outbox.value = g.coordinator.outboxFiles()
+                observeMesh(g)
+                selfTest.value = DeviceSelfTest.run(getApplication(), g, updated)
+            } catch (e: Exception) {
+                boot.value = BootState.Failed(e.message ?: e.javaClass.simpleName)
+            }
+        }
+    }
+
     fun dismissSelfTest() {
         selfTest.value = null
     }

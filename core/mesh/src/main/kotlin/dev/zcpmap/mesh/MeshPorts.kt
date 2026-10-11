@@ -141,6 +141,12 @@ data class MeshPolicy(
     val maxDistanceMeters: Double = 3.0,
     /** Require provisioned (key-derived) STS. Static STS is not cryptographically secure ranging. */
     val requireProvisionedSts: Boolean = true,
+    /**
+     * When sessions without provisioned STS are allowed (requireProvisionedSts = false), their
+     * distance is not cryptographically proven, so every contract with such a peer waits for a
+     * human tap. Turning this off as well is not offered in the UI.
+     */
+    val approveContractsWithoutProvisionedSts: Boolean = true,
     /** If the device has no UWB, refuse all sessions (true) or allow unbound sessions (false). */
     val requireUwb: Boolean = true,
     val minRangingSamples: Int = 8,
