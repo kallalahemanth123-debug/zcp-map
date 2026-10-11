@@ -10,8 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# contents: write lets the last step publish logs to the ci-logs-* branches (plain git branches that
-# can be read without access to the Actions log store). Nothing else is written.
+# contents: write lets the publish-apk job update the "latest" release. The optional log-publishing
+# steps (off unless the repository variable PUBLISH_CI_LOGS is "true") also use it to push plain-text
+# logs to ci-logs-* branches, for tools that cannot open the Actions log viewer.
 permissions:
   contents: write
 
@@ -77,7 +78,7 @@ jobs:
           done
 
       - name: Publish logs to the ci-logs-build branch
-        if: always()
+        if: always() && vars.PUBLISH_CI_LOGS == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -137,8 +138,16 @@ jobs:
             **/build/outputs/androidTest-results/
           if-no-files-found: ignore
 
+      - name: Summarise failures as annotations
+        if: failure()
+        run: |
+          set +e
+          grep -n -E "FAILED|Exception|What went wrong|AssertionError" build-logs/4-emulator.log | head -40 | while IFS= read -r line; do
+            echo "::error title=4-emulator.log::${line:0:900}"
+          done
+
       - name: Publish logs to the ci-logs-emulator branch
-        if: always()
+        if: always() && vars.PUBLISH_CI_LOGS == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

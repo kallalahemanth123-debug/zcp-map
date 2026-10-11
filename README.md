@@ -23,6 +23,14 @@ tokens, Merkle-verified transfers, signed settlement).
 :core:protocol    JVM — ZCP1 wire codec, Merkle tree, lifecycle FSM, strict JSON + schema
 ```
 
+## Install
+
+Ready-made test APK (built and tested by GitHub Actions on every change to `main`):
+**[Releases → latest → `zcp-map-debug.apk`](https://github.com/kallalahemanth123-debug/zcp-map/releases/tag/latest)**.
+Open that page on each phone, tap the APK and allow the browser to install apps. It is a debug build
+signed with the project's public test key (`app/debug.keystore`), so newer builds install over older
+ones. To build it yourself: `./gradlew :app:assembleDebug` → `app/build/outputs/apk/debug/app-debug.apk`.
+
 ## Setting up each agent mode
 
 Open **SETUP** while the mesh is OFFLINE.
@@ -66,17 +74,21 @@ If SELF-TEST reports that provisioned STS is unsupported, it offers a one-tap fi
 
 ## Verification status
 
-- **JVM modules:** 69 tests pass with Kotlin 2.4.10 (same compiler as the real build). They cover
-  RFC test vectors, the Noise XX handshake (also checked against an independent Python
-  implementation), two-phone mesh simulations including attack cases, the airlock, both model
-  backends (including a real HTTP round trip), and end-to-end runs where a model-driven agent and
-  two rule-based agents move files over the real protocol stack.
-- **Android modules** compile against the real Android 35 platform and the real LiteRT-LM v0.18.0
-  Kotlin API, with other libraries checked against their published sources.
-- **GitHub Actions** (`.github/workflows/build.yml`) runs the real Gradle build (debug + release
-  APKs), all unit tests, Android lint, and the on-device tests on an Android emulator.
-- **Not automatable:** UWB ranging, Nearby and Wi-Fi Aware between two physical phones. Use
-  SELF-TEST and the two-phone steps above.
+Every push to `main` runs `.github/workflows/build.yml` on GitHub (latest run: all green):
+
+- **69 JVM unit tests** (protocol, security, mesh, agent): RFC test vectors, the Noise XX handshake
+  (also checked against an independent Python implementation), two-phone mesh simulations including
+  attack cases, the airlock, both model backends (including a real HTTP round trip), and end-to-end
+  runs where a model-driven agent and two rule-based agents move files over the real protocol stack.
+- **Real Gradle build** of the debug and release APKs with AGP 8.11.1 / Kotlin 2.4.10.
+- **Android lint** on `:app`, `:core:keystore` and `:core:transport`: no issues.
+- **7 on-device tests on an Android 14 emulator**: the real Android Keystore (identity stability,
+  signatures, endorsements, secret vault), node start-up with the rule-based agent, the full
+  SELF-TEST report, settings storage, and a clean failure when no on-device model is imported.
+  These caught a Keystore bug on Android 13/14 that the JVM tests could not, now fixed.
+- Only after all of that passes is the APK published to the `latest` release.
+- **Not automatable:** UWB ranging, Nearby and Wi-Fi Aware between two physical phones (emulators
+  have none of these radios). Use SELF-TEST and the two-phone steps above.
 
 ## Requirements and known constraints
 
