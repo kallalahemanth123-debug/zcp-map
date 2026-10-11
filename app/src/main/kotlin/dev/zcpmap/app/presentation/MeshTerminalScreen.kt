@@ -145,6 +145,12 @@ fun MeshTerminalScreen(vm: MeshAgentViewModel) {
     var showSetup by rememberSaveable { mutableStateOf(false) }
     val pickModel = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(vm::importModel) }
     val pickOutbox = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let(vm::addToOutbox) }
+    var sendTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    val pickToSend = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val target = sendTarget
+        sendTarget = null
+        if (uri != null && target != null) vm.sendFile(target, uri)
+    }
     MaterialTheme(colorScheme = TacColors) {
         Box(Modifier.fillMaxSize().background(Tac.bg)) {
             Column(
@@ -170,8 +176,14 @@ fun MeshTerminalScreen(vm: MeshAgentViewModel) {
                     Mono("outbox: " + state.outbox.joinToString(" · ") { "${it.first.removePrefix("outbox/")} (${humanBytes(it.second)})" }, Tac.dim, 9, maxLines = 2)
                 }
                 Radar(state.peers, state.settings.radiusMeters, state.meshRunning, Modifier.fillMaxWidth().aspectRatio(1.6f))
+                state.peers.filter { it.codeCheck != null }.forEach { p -> CodeCheckCard(p, vm::confirmCode) }
                 state.approvals.forEach { ApprovalCard(it, vm::resolveApproval) }
-                PeerStrip(state.peers, vm::terminate)
+                PeerStrip(
+                    state.peers, state.meshRunning,
+                    onConnect = vm::connect,
+                    onSendFile = { pid -> sendTarget = pid; pickToSend.launch(arrayOf("*/*")) },
+                    onTerminate = vm::terminate,
+                )
                 Terminal(state.log, Modifier.weight(1f).fillMaxWidth())
                 DirectiveBar(
                     enabled = state.meshRunning,
@@ -352,9 +364,15 @@ private fun DrawScope.drawSweep(center: Offset, radius: Float, angle: Float) {
 // ------------------------------------------------------------------------------------------
 
 @Composable
-private fun PeerStrip(peers: List<PeerUi>, onTerminate: (String) -> Unit) {
+private fun PeerStrip(
+    peers: List<PeerUi>,
+    running: Boolean,
+    onConnect: (String) -> Unit,
+    onSendFile: (String) -> Unit,
+    onTerminate: (String) -> Unit,
+) {
     if (peers.isEmpty()) {
-        Mono("no peers in range", Tac.dim, 10)
+        Mono(if (running) "no phones found yet · the other phone must be ONLINE with the app open" else "switch ONLINE to find nearby phones", Tac.dim, 10)
         return
     }
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -366,24 +384,67 @@ private fun PeerStrip(peers: List<PeerUi>, onTerminate: (String) -> Unit) {
                 Box(Modifier.size(8.dp).background(phaseColor(p.phase), RoundedCornerShape(4.dp)))
                 Spacer(Modifier.width(6.dp))
                 Column(Modifier.weight(1f)) {
-                    Mono("${p.peerId}  ${p.phase}", phaseColor(p.phase), 10, FontWeight.Bold, maxLines = 1)
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Badge("NOISE", if (p.noiseVerified) Tac.green else Tac.dim)
-                        Badge(
-                            if (p.distanceBound) "UWB %.2fm".format(p.boundDistanceMeters ?: 0.0) else "UWB",
-                            if (p.distanceBound) Tac.green else Tac.dim,
-                        )
-                        Badge(if (p.provisionedSts == false) "STS-S" else "STS-P", if (p.provisionedSts == true) Tac.green else Tac.dim)
-                        Badge("MANIFEST", if (p.manifestVerified) Tac.green else Tac.dim)
-                        if (p.bulkLink) Badge("NAN", Tac.cyan)
+                    Mono("phone ${p.peerId.takeLast(4)} · ${PlainLanguage.status(p)}", phaseColor(p.phase), 10, FontWeight.Bold, maxLines = 2)
+                    if (p.phase != LifecyclePhase.IDLE) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Badge("NOISE", if (p.noiseVerified) Tac.green else Tac.dim)
+                            if (p.codeVerified || p.codeCheck != null) {
+                                Badge("CODE", if (p.codeVerified) Tac.green else Tac.amber)
+                            } else {
+                                Badge(
+                                    if (p.distanceBound) "UWB %.2fm".format(p.boundDistanceMeters ?: 0.0) else "UWB",
+                                    if (p.distanceBound) Tac.green else Tac.dim,
+                                )
+                                Badge(if (p.provisionedSts == false) "STS-S" else "STS-P", if (p.provisionedSts == true) Tac.green else Tac.dim)
+                            }
+                            Badge("MANIFEST", if (p.manifestVerified) Tac.green else Tac.dim)
+                            if (p.bulkLink) Badge("NAN", Tac.cyan)
+                        }
                     }
                     p.fingerprintShort?.let { Mono(it, Tac.dim, 9, maxLines = 1) }
-                    p.teardownReason?.let { Mono("torn down: $it", Tac.red, 9) }
+                    p.failure?.let { Mono(it, Tac.red, 9) }
                 }
-                if (p.phase != LifecyclePhase.IDLE && p.phase != LifecyclePhase.TEARDOWN) {
-                    TextButton(onClick = { onTerminate(p.peerId) }) { Mono("WIPE", Tac.red, 10, FontWeight.Bold) }
+                Column(horizontalAlignment = Alignment.End) {
+                    when (p.phase) {
+                        LifecyclePhase.IDLE -> Button(
+                            onClick = { onConnect(p.peerId) }, enabled = running,
+                            colors = ButtonDefaults.buttonColors(containerColor = Tac.green, contentColor = Tac.bg),
+                        ) { Mono(if (p.failure != null) "RETRY" else "CONNECT", Tac.bg, 10, FontWeight.Bold) }
+                        LifecyclePhase.ATTESTATION_VERIFIED, LifecyclePhase.AGENT_NEGOTIATING, LifecyclePhase.SETTLEMENT_COMPLETE -> {
+                            Button(
+                                onClick = { onSendFile(p.peerId) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Tac.green, contentColor = Tac.bg),
+                            ) { Mono("SEND FILE", Tac.bg, 10, FontWeight.Bold) }
+                            TextButton(onClick = { onTerminate(p.peerId) }) { Mono("DISCONNECT", Tac.red, 9, FontWeight.Bold) }
+                        }
+                        LifecyclePhase.TEARDOWN -> Mono("retry in a few s", Tac.dim, 9)
+                        else -> TextButton(onClick = { onTerminate(p.peerId) }) { Mono("CANCEL", Tac.red, 10, FontWeight.Bold) }
+                    }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CodeCheckCard(p: PeerUi, onConfirm: (String, Boolean) -> Unit) {
+    val c = p.codeCheck ?: return
+    Column(
+        Modifier.fillMaxWidth().border(1.dp, Tac.amber, RoundedCornerShape(4.dp)).background(Tac.amber.copy(alpha = 0.06f)).padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Mono("COMPARE CODES · phone ${p.peerId.takeLast(4)}", Tac.amber, 10, FontWeight.Bold)
+        Text(c.code, color = Tac.green, fontFamily = Tac.mono, fontSize = 34.sp, fontWeight = FontWeight.Bold)
+        Mono("The other phone must show exactly this code. If it does, tap CODES MATCH on both phones. If it doesn't, tap DIFFERENT.", Tac.text, 10)
+        if (!c.confirmedHere) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { onConfirm(p.peerId, true) }, colors = ButtonDefaults.buttonColors(containerColor = Tac.green, contentColor = Tac.bg)) {
+                    Mono("CODES MATCH", Tac.bg, 10, FontWeight.Bold)
+                }
+                OutlinedButton(onClick = { onConfirm(p.peerId, false) }) { Mono("DIFFERENT", Tac.red, 10, FontWeight.Bold) }
+            }
+        } else {
+            Mono(if (c.confirmedByPeer) "Both confirmed — finishing…" else "Confirmed here · now tap CODES MATCH on the other phone", Tac.dim, 10)
         }
     }
 }

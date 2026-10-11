@@ -58,6 +58,7 @@ internal fun SetupDialog(
     var maxAcceptMb by remember { mutableStateOf(current.maxAcceptMb.toString()) }
     var radius by remember { mutableStateOf(current.radiusMeters.toString()) }
     var requirePsts by remember { mutableStateOf(current.requireProvisionedSts) }
+    var allowCode by remember { mutableStateOf(current.allowCodeCheck) }
     var errors by remember { mutableStateOf(emptyList<String>()) }
     val modelName = (importState as? ImportState.Done)?.name ?: current.modelFileName
 
@@ -106,6 +107,8 @@ internal fun SetupDialog(
                 Field("Distance bound radius (m)", radius, number = true) { radius = it }
                 Toggle("Only allow phones with provisioned STS (relay-proof distance)", requirePsts) { requirePsts = it }
                 if (!requirePsts) Mono("Phones without it can connect, but their distance could be faked by a relay, so every transfer with them waits for your APPROVE tap.", Tac.amber, 10)
+                Toggle("Allow phones without UWB (both people compare a 6-digit code)", allowCode) { allowCode = it }
+                if (allowCode) Mono("Used only when UWB isn't possible. Turn it on on both phones. Each transfer on such a connection waits for your APPROVE tap.", Tac.amber, 10)
                 errors.forEach { Mono("• $it", Tac.red, 10) }
             }
         },
@@ -119,6 +122,7 @@ internal fun SetupDialog(
                     autoAccept = autoAccept, maxAcceptMb = maxAcceptMb.trim().toIntOrNull() ?: -1,
                     radiusMeters = radius.trim().toDoubleOrNull() ?: -1.0,
                     requireProvisionedSts = requirePsts,
+                    allowCodeCheck = allowCode,
                 )
                 errors = onSave(parsed, if (tokenEdited) serverToken else null)
                 if (errors.isEmpty()) onClose()

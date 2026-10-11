@@ -96,7 +96,11 @@ class NodeGraph private constructor(
             val transport = P2PTransportEngine(app, scope)
             val ranging = UwbProximityManager(app)
             val device = AndroidDeviceConstraints(app, sandboxRoot)
-            val policy = MeshPolicy(maxDistanceMeters = settings.radiusMeters, requireProvisionedSts = settings.requireProvisionedSts)
+            val policy = MeshPolicy(
+                maxDistanceMeters = settings.radiusMeters,
+                requireProvisionedSts = settings.requireProvisionedSts,
+                allowCodeCheckWithoutUwb = settings.allowCodeCheck,
+            )
             val coordinator = MeshSessionCoordinator(
                 transport = transport,
                 ranging = ranging,

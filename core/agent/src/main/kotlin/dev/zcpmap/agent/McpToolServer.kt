@@ -332,7 +332,7 @@ class ToolRouter(private val control: MeshControl, val airlock: SecurityAirlock)
         val rows = control.peerIds().mapNotNull { pid ->
             val snap = control.snapshot(pid) ?: return@mapNotNull null
             val att = control.attestation(pid)
-            val verified = att != null && att.distanceBound && att.peerFingerprint != null &&
+            val verified = att != null && (att.distanceBound || att.codeVerified) && att.peerFingerprint != null &&
                 att.phase in setOf(LifecyclePhase.ATTESTATION_VERIFIED, LifecyclePhase.AGENT_NEGOTIATING, LifecyclePhase.TASK_EXECUTING, LifecyclePhase.SETTLEMENT_COMPLETE)
             if (!verified && !includeUnverified) return@mapNotNull null
             buildJsonObject {
@@ -347,6 +347,7 @@ class ToolRouter(private val control: MeshControl, val airlock: SecurityAirlock)
                     snap.lastFix?.elevationDegrees?.let { put("elevation_deg", Math.round(it * 10) / 10.0) }
                     att.lastFixAgeMillis?.let { put("fix_age_ms", it) }
                     put("bound_distance_m", att.boundDistanceMeters ?: -1.0)
+                    put("proximity", if (att.codeVerified) "code_check" else "uwb")
                     put("provisioned_sts", snap.provisionedSts ?: false)
                     control.manifest(pid)?.let { m -> put("manifest", manifestJson(pid, m)) }
                     put("open_contracts", buildJsonArray { snap.openContracts.forEach { add(JsonPrimitive(it)) } })
@@ -382,6 +383,7 @@ class ToolRouter(private val control: MeshControl, val airlock: SecurityAirlock)
         put("phase", a.phase.name)
         put("fingerprint", a.peerFingerprint)
         put("distance_bound", a.distanceBound)
+        put("proximity", if (a.codeVerified) "code_check" else if (a.distanceBound) "uwb" else "none")
         a.boundDistanceMeters?.let { put("bound_distance_m", Math.round(it * 100) / 100.0) }
         a.manifestExpiresAtSeconds?.let { put("manifest_expires_at", it) }
     }

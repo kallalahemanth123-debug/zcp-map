@@ -77,9 +77,16 @@ class FakeTransport(val name: String, private val net: InMemoryNetwork) : PeerTr
     override suspend fun openBulkLink(endpointId: String, role: HandshakeRole, params: BulkLinkParams): FrameLink? = null
 }
 
-class FakeRanging(@Volatile var distance: Double, private val psts: Boolean = true) : SecureRangingPort {
+class FakeRanging(
+    @Volatile var distance: Double,
+    private val psts: Boolean = true,
+    /** false = this phone has no UWB radio. */
+    @Volatile var available: Boolean = true,
+    /** true = the radio starts but the ranging session fails immediately (seen on some real phones). */
+    @Volatile var failRanging: Boolean = false,
+) : SecureRangingPort {
     val configs = CopyOnWriteArrayList<BoundRangingConfig>()
-    override val isAvailable = true
+    override val isAvailable: Boolean get() = available
 
     override suspend fun prepare(role: HandshakeRole): PreparedRanging = object : PreparedRanging {
         override val local = UwbLocalParams(
@@ -92,6 +99,10 @@ class FakeRanging(@Volatile var distance: Double, private val psts: Boolean = tr
 
         override fun start(config: BoundRangingConfig): Flow<RangingEvent> = flow {
             configs += config
+            if (failRanging) {
+                emit(RangingEvent.Failure("simulated radio failure"))
+                return@flow
+            }
             var t = 0L
             while (true) {
                 emit(RangingEvent.Sample(distance, 12.0, -3.0, t))

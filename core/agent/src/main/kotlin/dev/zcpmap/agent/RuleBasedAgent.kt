@@ -170,9 +170,11 @@ class RuleBasedAgent(
             }
             is MeshEvent.TransferCompleted -> if (e.inbound) log.add(TranscriptKind.OBSERVATION, "received file → ${e.path}", e.peerId)
             is MeshEvent.ApprovalRequired -> log.add(TranscriptKind.OBSERVATION, "waiting for your APPROVE/DENY tap (${e.approvalId})", e.peerId)
+            is MeshEvent.CodeCheckRequired -> log.add(TranscriptKind.OBSERVATION, "check that both phones show ${e.code}, then tap CODES MATCH on both", e.peerId)
             is MeshEvent.SecurityAlert -> log.add(TranscriptKind.OBSERVATION, "security alert: ${e.reason}", e.peerId)
             is MeshEvent.StateChanged -> if (e.state is LifecycleState.AttestationVerified) {
-                log.add(TranscriptKind.OBSERVATION, "peer verified at %.2f m".format((e.state as LifecycleState.AttestationVerified).boundDistanceMeters), e.peerId)
+                val d = (e.state as LifecycleState.AttestationVerified).boundDistanceMeters
+                log.add(TranscriptKind.OBSERVATION, if (d < 0) "peer verified by code" else "peer verified at %.2f m".format(d), e.peerId)
             }
             else -> Unit
         }
@@ -234,7 +236,7 @@ class RuleBasedAgent(
             log.add(TranscriptKind.AGENT_TEXT, "session with $peer is still in $phase; try again shortly", peer)
             return false
         }
-        log.add(TranscriptKind.AGENT_TEXT, "securing session (Noise + UWB distance bound)…", peer)
+        log.add(TranscriptKind.AGENT_TEXT, "connecting: identity check, then distance check…", peer)
         return call(ToolCatalog.HANDSHAKE, buildJsonObject { put("peer_id", peer) }) != null
     }
 
@@ -264,8 +266,15 @@ class RuleBasedAgent(
         peers.forEach { p ->
             val o = p.jsonObject
             val id = o["peer_id"]?.jsonPrimitive?.content ?: "?"
-            val d = o["distance_m"]?.jsonPrimitive?.contentOrNull?.let { " $it m" } ?: ""
-            log.add(TranscriptKind.AGENT_TEXT, "${id.takeLast(4)} ${o["phase"]?.jsonPrimitive?.content} verified=${o["verified"]?.jsonPrimitive?.content}$d", id)
+            val d = o["distance_m"]?.jsonPrimitive?.contentOrNull?.let { " at $it m" } ?: ""
+            val phase = o["phase"]?.jsonPrimitive?.content
+            val text = when {
+                o["verified"]?.jsonPrimitive?.content == "true" -> "connected and verified$d"
+                phase == LifecyclePhase.IDLE.name -> "found nearby, not connected yet (tap CONNECT or type: connect ${id.takeLast(4)})"
+                phase == LifecyclePhase.TEARDOWN.name -> "last connection ended; you can connect again in a few seconds"
+                else -> "connecting… ($phase)"
+            }
+            log.add(TranscriptKind.AGENT_TEXT, "${id.takeLast(4)}: $text", id)
         }
     }
 

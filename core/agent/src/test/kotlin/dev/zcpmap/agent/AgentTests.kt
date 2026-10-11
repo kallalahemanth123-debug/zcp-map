@@ -155,6 +155,21 @@ class SecurityAirlockTest {
     }
 
     @Test
+    fun codeCheckedSessionNeedsNoRadioFixButSomeProximityProof() {
+        val c = FakeMeshControl()
+        val a = SecurityAirlock(c, maxCallsPerTurn = 100, violationsBeforeTeardown = 100)
+        // No UWB at all and no code check: refused.
+        c.attestation = c.attestation!!.copy(distanceBound = false, boundDistanceMeters = -1.0, lastFixAgeMillis = null, lastDistanceMeters = null)
+        assertIs<AirlockDecision.Deny>(a.inspect(ToolCatalog.PROPOSE, proposeArgs(c.peer)))
+        // Both people confirmed the code: allowed without any UWB fix.
+        c.attestation = c.attestation!!.copy(codeVerified = true)
+        assertIs<AirlockDecision.Allow>(a.inspect(ToolCatalog.PROPOSE, proposeArgs(c.peer)))
+        // Everything else still applies (keys, manifest).
+        c.attestation = c.attestation!!.copy(transportKeysLive = false)
+        assertIs<AirlockDecision.Deny>(a.inspect(ToolCatalog.PROPOSE, proposeArgs(c.peer)))
+    }
+
+    @Test
     fun streamRequiresExecutingAcceptedContractAndSandboxPath() {
         val c = FakeMeshControl()
         val a = SecurityAirlock(c, maxCallsPerTurn = 100, violationsBeforeTeardown = 100)

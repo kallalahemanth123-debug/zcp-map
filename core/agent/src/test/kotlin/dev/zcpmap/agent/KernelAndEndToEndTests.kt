@@ -180,13 +180,13 @@ class AgentKernelTest {
 // End-to-end over the real protocol stack (Noise, distance bound, manifests, Merkle streaming)
 // ==========================================================================================
 
-private class NodeUnderTest(name: String, net: InMemoryNetwork, scope: CoroutineScope) {
+private class NodeUnderTest(name: String, net: InMemoryNetwork, scope: CoroutineScope, uwb: Boolean = true, codeCheck: Boolean = false) {
     val dir: File = Files.createTempDirectory("zcp-e2e-$name").toFile()
     val signer = SoftwareEd25519Signer.generate()
     val mesh = MeshSessionCoordinator(
-        FakeTransport(name, net), FakeRanging(1.2), signer, StaticKeyRotator(signer, System::currentTimeMillis),
+        FakeTransport(name, net), FakeRanging(1.2, available = uwb), signer, StaticKeyRotator(signer, System::currentTimeMillis),
         SandboxFileStore(dir, 1L shl 30), { DeviceConstraints(90, true, ThermalLevel.NOMINAL, 64L shl 30) },
-        MeshPolicy(storageReserveBytes = 1L shl 20), "local-agent", scope,
+        MeshPolicy(storageReserveBytes = 1L shl 20, allowCodeCheckWithoutUwb = codeCheck), "local-agent", scope,
     )
     val control = CoordinatorMeshControl(mesh)
     val router = ToolRouter(control, SecurityAirlock(control))
@@ -291,6 +291,47 @@ class EndToEndAgentTest {
             assertTrue(a.transcript.value.any { it.text.contains("settlement signed") })
             assertTrue(b.transcript.value.any { it.text.startsWith("accepted") })
             assertTrue(a.transcript.value.none { it.kind == TranscriptKind.AIRLOCK_DENIED } && b.transcript.value.none { it.kind == TranscriptKind.AIRLOCK_DENIED })
+        } finally {
+            a.stop(); b.stop(); alpha.mesh.stop(); bravo.mesh.stop(); scope.cancel()
+            alpha.dir.deleteRecursively(); bravo.dir.deleteRecursively()
+        }
+    }
+
+    /** A phone without UWB: the people compare a code, then the receiver taps APPROVE once. */
+    @Test
+    fun ruleBasedShareWorksWithThePhoneWithoutUwbViaCodeCheck(): Unit = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val net = InMemoryNetwork()
+        val alpha = NodeUnderTest("alpha", net, scope, codeCheck = true)
+        val bravo = NodeUnderTest("bravo", net, scope, uwb = false, codeCheck = true)
+        val payload = ByteArray(40_000) { (it * 13 + 5).toByte() }
+        alpha.putOutbox("note.txt", payload)
+        val a = RuleBasedAgent(alpha.control, alpha.router, RulePolicy(), alpha.mesh.events, scope)
+        val b = RuleBasedAgent(bravo.control, bravo.router, RulePolicy(), bravo.mesh.events, scope)
+        try {
+            alpha.mesh.start(); bravo.mesh.start()
+            withTimeout(5_000) { while (alpha.mesh.discoveredPeerIds().isEmpty() || bravo.mesh.discoveredPeerIds().isEmpty()) delay(20) }
+            a.start(); b.start()
+            a.submitOperatorDirective("share note.txt")
+            // The two people read the codes and tap CODES MATCH on both phones.
+            withTimeout(15_000) {
+                while (alpha.mesh.peers.value.values.none { it.codeCheck != null } || bravo.mesh.peers.value.values.none { it.codeCheck != null }) delay(20)
+            }
+            val atA = alpha.mesh.peers.value.values.single { it.codeCheck != null }
+            val atB = bravo.mesh.peers.value.values.single { it.codeCheck != null }
+            assertEquals(atA.codeCheck!!.code, atB.codeCheck!!.code)
+            alpha.mesh.confirmCode(atA.peerId, true)
+            bravo.mesh.confirmCode(atB.peerId, true)
+            // No continuous distance check on this session, so the receiver approves the transfer.
+            withTimeout(15_000) { while (bravo.mesh.approvals.value.isEmpty()) delay(20) }
+            bravo.mesh.resolveApproval(bravo.mesh.approvals.value.single().approvalId, approve = true)
+            withTimeout(20_000) {
+                while (File(bravo.dir, "inbox").walkTopDown().none { it.isFile && it.name.endsWith(".bin") }) delay(50)
+            }
+            val received = File(bravo.dir, "inbox").walkTopDown().single { it.isFile && it.name.endsWith(".bin") }
+            assertContentEquals(payload, received.readBytes())
+            assertTrue(a.transcript.value.none { it.kind == TranscriptKind.AIRLOCK_DENIED } && b.transcript.value.none { it.kind == TranscriptKind.AIRLOCK_DENIED },
+                "airlock must allow code-checked sessions: ${a.transcript.value.filter { it.kind == TranscriptKind.AIRLOCK_DENIED } + b.transcript.value.filter { it.kind == TranscriptKind.AIRLOCK_DENIED }}")
         } finally {
             a.stop(); b.stop(); alpha.mesh.stop(); bravo.mesh.stop(); scope.cancel()
             alpha.dir.deleteRecursively(); bravo.dir.deleteRecursively()

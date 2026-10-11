@@ -339,6 +339,7 @@ class AgentKernel(
             is LifecycleState.AttestationVerified -> buildJsonObject {
                 put("type", "peer_attested"); put("peer_id", e.peerId); put("fingerprint", s.peerFingerprint)
                 put("bound_distance_m", Math.round(s.boundDistanceMeters * 100) / 100.0)
+                put("proximity", if (s.boundDistanceMeters < 0) "code_check" else "uwb")
             }
             is LifecycleState.Teardown -> buildJsonObject {
                 put("type", "session_ended"); put("peer_id", e.peerId); put("reason", s.reason.name); put("from_phase", s.fromPhase.name)
@@ -371,6 +372,10 @@ class AgentKernel(
         }
         is MeshEvent.ApprovalRequired -> buildJsonObject {
             put("type", "awaiting_user_approval"); put("peer_id", e.peerId); put("approval_id", e.approvalId)
+        }
+        is MeshEvent.CodeCheckRequired -> buildJsonObject {
+            put("type", "awaiting_code_check"); put("peer_id", e.peerId)
+            put("note", "the people holding both phones must compare a code and confirm on each screen; tools for this peer will wait")
         }
         is MeshEvent.Ranging, is MeshEvent.TransferProgress, is MeshEvent.Log -> null
     }

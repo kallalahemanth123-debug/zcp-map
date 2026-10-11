@@ -67,19 +67,37 @@ tool format automatically.
    anything that fails.
 2. **On-phone automated tests:** with a phone plugged in,
    `./gradlew :core:keystore:connectedDebugAndroidTest :app:connectedDebugAndroidTest`.
-3. **Two phones:** add a file with **+ FILE** on phone A, switch both ONLINE, hold them within the
-   radius, type `share <file>` (rule mode) or an instruction (model modes).
+3. **Two phones:** switch both ONLINE. The other phone appears in the peer list as
+   "Found nearby · not connected". Tap **CONNECT** on one phone, hold the phones within the radius,
+   then tap **SEND FILE** on the connected phone and pick a file. (Typed commands still work:
+   `connect`, `share <file>`, `scan`, `wipe all`, `help`.) If a connection fails, the peer card says
+   why in plain words and the button turns into **RETRY**.
 
 If SELF-TEST reports that provisioned STS is unsupported, it offers a one-tap fix (see below).
+
+### Phones without UWB
+
+Distance bounding needs UWB on both phones. On Android that is mostly Pixel Pro/Fold and Samsung
+Galaxy S21+ and later Plus/Ultra, Note20 and Z Fold models; base Galaxy S models, the A series and
+most Flips have none. For such phones there is an opt-in **code check**: SETUP → "Allow phones without
+UWB" (or the one-tap fix in SELF-TEST), on **both** phones. When UWB is not possible (no radio, UWB
+off, ranging fails, or provisioned STS is required but missing), both screens show the same 6-digit
+code and each person taps **CODES MATCH**.
+
+The code is a short authentication string over the Noise handshake with a commit-then-reveal
+exchange, so an attacker in the middle gets a single one-in-a-million guess. What it does not give
+you is a continuous distance check, so every transfer on a code-checked connection also waits for an
+APPROVE tap. Phones that both have UWB keep using UWB.
 
 ## Verification status
 
 Every push to `main` runs `.github/workflows/build.yml` on GitHub (latest run: all green):
 
-- **69 JVM unit tests** (protocol, security, mesh, agent): RFC test vectors, the Noise XX handshake
+- **77 JVM unit tests** (protocol, security, mesh, agent): RFC test vectors, the Noise XX handshake
   (also checked against an independent Python implementation), two-phone mesh simulations including
   attack cases, the airlock, both model backends (including a real HTTP round trip), and end-to-end
-  runs where a model-driven agent and two rule-based agents move files over the real protocol stack.
+  runs where a model-driven agent and two rule-based agents move files over the real protocol stack, including a phone without UWB
+  connected by the code check.
 - **Real Gradle build** of the debug and release APKs with AGP 8.11.1 / Kotlin 2.4.10.
 - **Android lint** on `:app`, `:core:keystore` and `:core:transport`: no issues.
 - **7 on-device tests on an Android 14 emulator**: the real Android Keystore (identity stability,
@@ -109,8 +127,8 @@ Every push to `main` runs `.github/workflows/build.yml` on GitHub (latest run: a
 - **Android 13+ (minSdk 33).** This allows hardware-backed Ed25519 identity keys and the
   `NEARBY_WIFI_DEVICES` permission model. Nearly every UWB Android phone has been updated to
   Android 13 or later, and the UWB library itself already requires Android 12.
-- **UWB is required for distance bounding.** Phones without UWB cannot form sessions (SELF-TEST
-  reports this).
+- **UWB is required for distance bounding.** Phones without UWB can connect only with the opt-in code
+  check described above (SELF-TEST reports which applies).
 - **Provisioned STS (relay-proof distance).** If a phone's UWB chip lacks it, SELF-TEST shows a
   one-tap fix: allow such phones, with every transfer to or from them waiting for your APPROVE tap.
   The security reduction is visible and bounded, not silent. Phones that do support it are

@@ -31,6 +31,7 @@ enum class CheckLevel { PASS, WARN, FAIL }
 /** A fix the app can apply itself when the operator taps the button next to a failed check. */
 enum class SelfAction(val label: String) {
     ALLOW_STATIC_STS_WITH_APPROVAL("ALLOW — I'LL APPROVE EACH TRANSFER"),
+    ALLOW_CODE_CHECK("ALLOW CONNECTING WITH A CODE"),
 }
 
 data class SelfCheck(
@@ -80,9 +81,15 @@ object DeviceSelfTest {
         else SelfCheck("Google Play services", CheckLevel.FAIL, "status $gms", "Install or update Google Play services")
 
         val uwb = UwbProximityManager(context).probe()
+        val codeFix = "Without UWB the phones can't measure distance. Tap below to connect by comparing a 6-digit code on both " +
+            "screens instead (do it on both phones). Every transfer then also waits for your APPROVE tap."
         out += when {
-            !uwb.hardware -> SelfCheck("UWB radio", CheckLevel.FAIL, uwb.detail, "This phone cannot do distance bounding. Use two UWB phones (e.g. Pixel 6 Pro or newer Pro models).")
-            !uwb.enabled -> SelfCheck("UWB radio", CheckLevel.FAIL, uwb.detail, "Settings → Connected devices → Connection preferences → Ultra-Wideband: on")
+            !uwb.hardware && settings.allowCodeCheck -> SelfCheck("UWB radio", CheckLevel.WARN, "${uwb.detail} — connections use the code check")
+            !uwb.hardware -> SelfCheck("UWB radio", CheckLevel.FAIL, uwb.detail, codeFix, SelfAction.ALLOW_CODE_CHECK)
+            !uwb.enabled && settings.allowCodeCheck -> SelfCheck("UWB radio", CheckLevel.WARN, "${uwb.detail} — connections use the code check until UWB is on",
+                "Settings → Connected devices → Connection preferences → Ultra-Wideband: on")
+            !uwb.enabled -> SelfCheck("UWB radio", CheckLevel.FAIL, uwb.detail,
+                "Settings → Connected devices → Connection preferences → Ultra-Wideband: on. Or tap below to connect with a code instead.", SelfAction.ALLOW_CODE_CHECK)
             else -> SelfCheck("UWB radio", CheckLevel.PASS, "on; angle-of-arrival ${if (uwb.angleOfArrival) "yes" else "no"}; ${uwb.detail}")
         }
         if (uwb.enabled) {

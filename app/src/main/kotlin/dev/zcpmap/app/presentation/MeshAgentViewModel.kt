@@ -16,7 +16,9 @@ import dev.zcpmap.app.platform.SelfCheck
 import dev.zcpmap.app.settings.AgentMode
 import dev.zcpmap.app.settings.AgentSettings
 import dev.zcpmap.app.settings.SettingsStore
+import dev.zcpmap.mesh.CodeCheckView
 import dev.zcpmap.mesh.LogChannel
+import dev.zcpmap.mesh.MeshCommandResult
 import dev.zcpmap.mesh.MeshEvent
 import dev.zcpmap.mesh.PeerSnapshot
 import dev.zcpmap.mesh.PendingApproval
@@ -60,6 +62,11 @@ data class PeerUi(
     val bulkLink: Boolean,
     val openContracts: Int,
     val teardownReason: TeardownReason?,
+    /** Set while both people must compare a code (no UWB for this pair). */
+    val codeCheck: CodeCheckView? = null,
+    val codeVerified: Boolean = false,
+    /** Plain-language reason the last connection with this phone failed; cleared on the next CONNECT. */
+    val failure: String? = null,
 )
 
 sealed interface BootState {
@@ -109,6 +116,7 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
     private val selfTestRunning = MutableStateFlow(false)
     private val importState = MutableStateFlow<ImportState>(ImportState.Idle)
     private val outbox = MutableStateFlow<List<Pair<String, Long>>>(emptyList())
+    private val failures = MutableStateFlow<Map<String, String>>(emptyMap())
     private var eventJob: Job? = null
 
     private fun rebuild() {
@@ -145,7 +153,16 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
                         e.text, e.peerId,
                     )
                     is MeshEvent.SecurityAlert -> appendMesh(LogTone.ALERT, "${e.reason}: ${e.detail}", e.peerId)
-                    is MeshEvent.StateChanged -> appendMesh(LogTone.PROTOCOL, "→ ${e.state.phase}", e.peerId)
+                    is MeshEvent.StateChanged -> {
+                        appendMesh(LogTone.PROTOCOL, "→ ${e.state.phase}", e.peerId)
+                        val st = e.state
+                        if (st is LifecycleState.Teardown && st.reason != TeardownReason.LOCAL_REQUEST) {
+                            val why = PlainLanguage.teardown(st.reason, st.detail, settings.value.radiusMeters)
+                            failures.value = failures.value + (e.peerId to why)
+                            appendMesh(LogTone.ALERT, "connection ended: $why", e.peerId)
+                        }
+                    }
+                    is MeshEvent.CodeCheckRequired -> appendMesh(LogTone.CRYPTO, "compare codes: this phone shows ${e.code}", e.peerId)
                     is MeshEvent.TransferProgress -> if (e.bytesDone == e.totalBytes) {
                         appendMesh(LogTone.TRANSPORT, "${if (e.inbound) "received" else "sent"} ${e.totalBytes} bytes (${e.contractId})", e.peerId)
                     }
@@ -190,7 +207,9 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
         (agentLines + mesh).sortedBy { it.atMillis }.takeLast(400)
     }
 
-    private val peerUi = combine(peersFlow, liveFixes) { peers, fixes -> peers.values.map { toUi(it, fixes[it.peerId]) }.sortedBy { it.peerId } }
+    private val peerUi = combine(peersFlow, liveFixes, failures) { peers, fixes, fails ->
+        peers.values.map { toUi(it, fixes[it.peerId], fails[it.peerId]) }.sortedBy { it.peerId }
+    }
 
     private data class Head(val boot: BootState, val running: Boolean, val settings: AgentSettings, val label: String)
     private data class Tools(val selfTest: List<SelfCheck>?, val running: Boolean, val import: ImportState, val outbox: List<Pair<String, Long>>)
@@ -207,7 +226,7 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
         )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), MeshUiState(settings = settings.value))
 
-    private fun toUi(s: PeerSnapshot, liveFix: RadarFix?): PeerUi {
+    private fun toUi(s: PeerSnapshot, liveFix: RadarFix?, failure: String?): PeerUi {
         val phase = s.state.phase
         val past = { p: LifecyclePhase -> phase.ordinal >= p.ordinal && phase != LifecyclePhase.TEARDOWN }
         return PeerUi(
@@ -223,6 +242,9 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
             bulkLink = s.bulkLinkActive,
             openContracts = s.openContracts.size,
             teardownReason = (s.state as? LifecycleState.Teardown)?.reason,
+            codeCheck = s.codeCheck,
+            codeVerified = s.codeVerified,
+            failure = failure,
         )
     }
 
@@ -337,6 +359,7 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
         }
         val updated = when (action) {
             dev.zcpmap.app.platform.SelfAction.ALLOW_STATIC_STS_WITH_APPROVAL -> settings.value.copy(requireProvisionedSts = false)
+            dev.zcpmap.app.platform.SelfAction.ALLOW_CODE_CHECK -> settings.value.copy(allowCodeCheck = true)
         }
         store.save(updated)
         settings.value = updated
@@ -366,23 +389,72 @@ class MeshAgentViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Copies a user-picked file into the sandbox outbox so agents can share it. */
     fun addToOutbox(uri: Uri) {
-        val ctx = getApplication<Application>()
         val g = graph.value ?: return
         viewModelScope.launch {
-            try {
-                withContext(Dispatchers.IO) {
-                    val name = ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
-                        if (c.moveToFirst()) c.getString(0) else null
-                    }?.let { sanitizeFileName(it) } ?: "file.bin"
-                    val dest = File(g.sandbox.root, "outbox/$name")
-                    dest.parentFile?.mkdirs()
-                    ctx.contentResolver.openInputStream(uri)?.use { inp -> dest.outputStream().use { inp.copyTo(it) } }
-                        ?: throw IOException("cannot open the selected file")
+            val name = copyToOutbox(uri, g) ?: return@launch
+            refreshOutbox()
+            appendMesh(LogTone.TRANSPORT, "added to outbox: $name", null)
+        }
+    }
+
+    /** Returns the outbox file name, or null after logging why the copy failed. */
+    private suspend fun copyToOutbox(uri: Uri, g: NodeGraph): String? {
+        val ctx = getApplication<Application>()
+        return try {
+            withContext(Dispatchers.IO) {
+                val name = ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                    if (c.moveToFirst()) c.getString(0) else null
+                }?.let { sanitizeFileName(it) } ?: "file.bin"
+                val dest = File(g.sandbox.root, "outbox/$name")
+                dest.parentFile?.mkdirs()
+                ctx.contentResolver.openInputStream(uri)?.use { inp -> dest.outputStream().use { inp.copyTo(it) } }
+                    ?: throw IOException("cannot open the selected file")
+                name
+            }
+        } catch (e: Exception) {
+            appendMesh(LogTone.ALERT, "could not add file: ${e.message}", null)
+            null
+        }
+    }
+
+    /** Operator CONNECT: runs the secure handshake with a discovered phone. */
+    fun connect(peerId: String) {
+        val g = graph.value ?: return
+        failures.value = failures.value - peerId
+        appendMesh(LogTone.CRYPTO, "connecting: identity check, then distance check…", peerId)
+        viewModelScope.launch {
+            when (val r = g.coordinator.initiateHandshake(peerId)) {
+                is MeshCommandResult.Ok -> appendMesh(
+                    LogTone.CRYPTO,
+                    if (r.value.codeVerified) "connected · verified by code" else "connected · verified at %.2f m".format(r.value.boundDistanceMeters ?: 0.0),
+                    peerId,
+                )
+                is MeshCommandResult.Failed -> if (failures.value[peerId] == null) {
+                    // A teardown already produced a plain-language reason; otherwise explain the link failure.
+                    val why = PlainLanguage.connectFailure(r.reason)
+                    failures.value = failures.value + (peerId to why)
+                    appendMesh(LogTone.ALERT, "could not connect: $why", peerId)
                 }
-                refreshOutbox()
-                appendMesh(LogTone.TRANSPORT, "added to outbox: ${outbox.value.lastOrNull()?.first ?: ""}", null)
-            } catch (e: Exception) {
-                appendMesh(LogTone.ALERT, "could not add file: ${e.message}", null)
+            }
+        }
+    }
+
+    /** The person says whether the code on this phone matches the other phone. */
+    fun confirmCode(peerId: String, matches: Boolean) {
+        val g = graph.value ?: return
+        viewModelScope.launch { g.coordinator.confirmCode(peerId, matches) }
+    }
+
+    /** SEND FILE on a peer card: copy the picked file into the outbox, then ask the agent to share it. */
+    fun sendFile(peerId: String, uri: Uri) {
+        val g = graph.value ?: return
+        viewModelScope.launch {
+            val name = copyToOutbox(uri, g) ?: return@launch
+            refreshOutbox()
+            if (settings.value.mode == AgentMode.RULES) {
+                g.agent.submitOperatorDirective("share $name $peerId")
+            } else {
+                g.agent.submitOperatorDirective("Share the file outbox/$name with peer $peerId (task file_share, proposer_sends).")
             }
         }
     }

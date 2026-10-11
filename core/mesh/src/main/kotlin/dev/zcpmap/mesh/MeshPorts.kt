@@ -147,8 +147,17 @@ data class MeshPolicy(
      * human tap. Turning this off as well is not offered in the UI.
      */
     val approveContractsWithoutProvisionedSts: Boolean = true,
-    /** If the device has no UWB, refuse all sessions (true) or allow unbound sessions (false). */
-    val requireUwb: Boolean = true,
+    /**
+     * When either phone cannot do UWB (no radio, UWB off, ranging fails, or provisioned STS is
+     * required but unsupported), refuse the session (false, default) or let both people compare a
+     * 6-digit code instead (true). The code is a short authentication string over the Noise handshake
+     * with commit-then-reveal, so a man in the middle gets one 1-in-a-million guess. It proves both
+     * screens were seen together at connect time; there is no continuous distance check afterwards,
+     * so every contract on such a session still needs a human tap.
+     */
+    val allowCodeCheckWithoutUwb: Boolean = false,
+    /** With the code check allowed: give up on UWB if no distance bound arrives within this time. */
+    val uwbFallbackAfterMillis: Long = 9_000,
     val minRangingSamples: Int = 8,
     val rangingWindowMillis: Long = 8_000,
     /** Peer-reported and locally measured distances must agree within this tolerance. */
@@ -196,7 +205,14 @@ data class PeerSnapshot(
     val manifestExpiresAtSeconds: Long?,
     val bulkLinkActive: Boolean,
     val openContracts: List<String>,
+    /** Present while the two people must compare a code (CODE_CHECK). */
+    val codeCheck: CodeCheckView? = null,
+    /** The session's proximity was established by the code check instead of UWB. */
+    val codeVerified: Boolean = false,
 )
+
+/** [code] is shown on both phones; it is a check value, not a secret. */
+data class CodeCheckView(val code: String, val confirmedHere: Boolean, val confirmedByPeer: Boolean)
 
 sealed interface MeshEvent {
     val peerId: String
@@ -212,6 +228,8 @@ sealed interface MeshEvent {
     data class SettlementCompleted(override val peerId: String, val contractId: String, val receiptHashHex: String) : MeshEvent
     data class SecurityAlert(override val peerId: String, val reason: TeardownReason, val detail: String) : MeshEvent
     data class ApprovalRequired(override val peerId: String, val approvalId: String, val summary: String) : MeshEvent
+    /** Both people must compare [code] on their screens and confirm (see [MeshSessionCoordinator.confirmCode]). */
+    data class CodeCheckRequired(override val peerId: String, val code: String) : MeshEvent
     data class Log(override val peerId: String, val channel: LogChannel, val text: String) : MeshEvent
 }
 

@@ -104,7 +104,7 @@ class ContractEvaluator(private val policy: MeshPolicy) {
         device: DeviceConstraints,
         peerManifest: CapabilityManifest?,
         nowSeconds: Long,
-        /** true = provisioned STS, false = static STS, null = no distance proof at all. */
+        /** true = provisioned STS, false = static STS, null = no UWB distance proof (code check). */
         provisionedSts: Boolean? = true,
     ): EvaluationReport {
         val hard = ArrayList<String>()
@@ -138,7 +138,8 @@ class ContractEvaluator(private val policy: MeshPolicy) {
         }
         if (t.maxBytes > policy.userApprovalAboveBytes) soft += "transfer above ${policy.userApprovalAboveBytes} bytes requires user approval"
         if (provisionedSts != true && policy.approveContractsWithoutProvisionedSts) {
-            soft += "peer distance is not cryptographically proven (no provisioned STS) — your approval is required"
+            soft += if (provisionedSts == false) "peer distance is not cryptographically proven (no provisioned STS) — your approval is required"
+            else "this connection was verified by comparing a code, without a UWB distance check — your approval is required"
         }
         val verdict = when {
             hard.isNotEmpty() -> Feasibility.INFEASIBLE
@@ -324,6 +325,16 @@ sealed interface MeshMessage {
     data class TransferAccept(val transferId: ByteArray, val accepted: Boolean, val reasonCode: String) : MeshMessage
     data class TransferComplete(val transferId: ByteArray, val verified: Boolean) : MeshMessage
     data class Settlement(val receipt: JsonObject) : MeshMessage
+    /** "This phone cannot do the UWB distance check" (reason is a short code); switches the pair to CODE_CHECK. */
+    data class NoUwb(val reason: String) : MeshMessage
+    /** Initiator's commitment to its code nonce (sent before it sees the responder's nonce). */
+    data class CodeCommit(val commitment: ByteArray) : MeshMessage
+    /** Responder's code nonce. */
+    data class CodeNonce(val nonce: ByteArray) : MeshMessage
+    /** Initiator opens its commitment. */
+    data class CodeReveal(val nonce: ByteArray) : MeshMessage
+    /** "The person holding this phone confirmed that the codes match." */
+    data object CodeConfirmed : MeshMessage
 }
 
 object MeshMessages {
@@ -421,6 +432,11 @@ object MeshMessages {
             ),
             setOf("t", "receipt"),
         ),
+        "no_uwb" to JsonSchema.Obj(mapOf("t" to t("no_uwb"), "reason" to JsonSchema.Str(pattern = REASON, maxLength = 32)), setOf("t", "reason")),
+        "code_commit" to JsonSchema.Obj(mapOf("t" to t("code_commit"), "c" to JsonSchema.Str(pattern = B64_32, maxLength = 43)), setOf("t", "c")),
+        "code_nonce" to JsonSchema.Obj(mapOf("t" to t("code_nonce"), "n" to JsonSchema.Str(pattern = B64_32, maxLength = 43)), setOf("t", "n")),
+        "code_reveal" to JsonSchema.Obj(mapOf("t" to t("code_reveal"), "n" to JsonSchema.Str(pattern = B64_32, maxLength = 43)), setOf("t", "n")),
+        "code_ok" to JsonSchema.Obj(mapOf("t" to t("code_ok")), setOf("t")),
     )
 
     sealed interface Parsed {
@@ -484,6 +500,11 @@ object MeshMessages {
             "transfer_accept" -> MeshMessage.TransferAccept(b64("tid")?.takeIf { it.size == 16 } ?: return Parsed.Rejected("tid"), b("ok"), s("reason"))
             "transfer_complete" -> MeshMessage.TransferComplete(b64("tid")?.takeIf { it.size == 16 } ?: return Parsed.Rejected("tid"), b("verified"))
             "settlement" -> MeshMessage.Settlement(obj.getValue("receipt").jsonObject)
+            "no_uwb" -> MeshMessage.NoUwb(s("reason"))
+            "code_commit" -> MeshMessage.CodeCommit(b64("c")?.takeIf { it.size == 32 } ?: return Parsed.Rejected("c"))
+            "code_nonce" -> MeshMessage.CodeNonce(b64("n")?.takeIf { it.size == 32 } ?: return Parsed.Rejected("n"))
+            "code_reveal" -> MeshMessage.CodeReveal(b64("n")?.takeIf { it.size == 32 } ?: return Parsed.Rejected("n"))
+            "code_ok" -> MeshMessage.CodeConfirmed
             else -> return Parsed.Rejected("unknown message type")
         }
         return Parsed.Ok(msg)
@@ -521,12 +542,18 @@ object MeshMessages {
                 put("t", "transfer_complete"); put("tid", CryptoEngine.b64url(m.transferId)); put("verified", m.verified)
             }
             is MeshMessage.Settlement -> buildJsonObject { put("t", "settlement"); put("receipt", m.receipt) }
+            is MeshMessage.NoUwb -> buildJsonObject { put("t", "no_uwb"); put("reason", m.reason) }
+            is MeshMessage.CodeCommit -> buildJsonObject { put("t", "code_commit"); put("c", CryptoEngine.b64url(m.commitment)) }
+            is MeshMessage.CodeNonce -> buildJsonObject { put("t", "code_nonce"); put("n", CryptoEngine.b64url(m.nonce)) }
+            is MeshMessage.CodeReveal -> buildJsonObject { put("t", "code_reveal"); put("n", CryptoEngine.b64url(m.nonce)) }
+            MeshMessage.CodeConfirmed -> buildJsonObject { put("t", "code_ok") }
         },
     )
 
     /** Which frame type may carry which message: a UWB message in an AGENT_PROPOSAL frame is a violation. */
     fun allowedIn(m: MeshMessage, frameType: dev.zcpmap.protocol.FrameType): Boolean = when (m) {
-        is MeshMessage.UwbParams, is MeshMessage.UwbResult -> frameType == dev.zcpmap.protocol.FrameType.UWB_BIND
+        is MeshMessage.UwbParams, is MeshMessage.UwbResult, is MeshMessage.NoUwb, is MeshMessage.CodeCommit,
+        is MeshMessage.CodeNonce, is MeshMessage.CodeReveal, MeshMessage.CodeConfirmed -> frameType == dev.zcpmap.protocol.FrameType.UWB_BIND
         else -> frameType == dev.zcpmap.protocol.FrameType.AGENT_PROPOSAL
     }
 }

@@ -13,7 +13,9 @@ package dev.zcpmap.protocol
  *                      being probed. No ranging result is trusted yet.
  *  NOISE_HANDSHAKE     Noise_XX handshake, then (sub-phase DISTANCE_BOUNDING) secure UWB ranging
  *                      whose STS key is derived from the handshake's secret exporter, then
- *                      (sub-phase MANIFEST_EXCHANGE) signed capability manifests. Secure ranging
+ *                      (sub-phase MANIFEST_EXCHANGE) signed capability manifests. If a phone
+ *                      cannot do UWB and policy allows it, DISTANCE_BOUNDING is replaced by
+ *                      CODE_CHECK (both people compare a short authentication string). Secure ranging
  *                      cannot precede the handshake: the STS key must be a fresh shared secret
  *                      that only the two authenticated endpoints hold, otherwise a relay could
  *                      simply forward the scrambled timestamp sequence.
@@ -34,7 +36,12 @@ enum class LifecyclePhase {
 
 enum class HandshakeRole { INITIATOR, RESPONDER }
 
-enum class HandshakeSubPhase { NOISE_EXCHANGE, DISTANCE_BOUNDING, MANIFEST_EXCHANGE }
+/**
+ * CODE_CHECK replaces DISTANCE_BOUNDING when either phone cannot do UWB and the local policy allows
+ * it: both people compare a 6-digit short authentication string derived (with a commit-then-reveal
+ * exchange) from the Noise handshake, and each confirms on their own screen.
+ */
+enum class HandshakeSubPhase { NOISE_EXCHANGE, DISTANCE_BOUNDING, CODE_CHECK, MANIFEST_EXCHANGE }
 
 enum class TeardownReason {
     LOCAL_REQUEST,
@@ -119,6 +126,10 @@ sealed interface LifecycleEvent {
     data class LinkEstablished(val role: HandshakeRole) : LifecycleEvent
     data object NoiseCompleted : LifecycleEvent
     data class DistanceBoundVerified(val distanceMeters: Double) : LifecycleEvent
+    /** UWB is not possible for this pair; switch DISTANCE_BOUNDING to CODE_CHECK. */
+    data object CodeCheckStarted : LifecycleEvent
+    /** Both people confirmed matching codes. Carries no distance (recorded as -1). */
+    data object CodeCheckPassed : LifecycleEvent
     data class ManifestVerified(val peerFingerprint: String) : LifecycleEvent
     data class ContractOpened(val contractId: String) : LifecycleEvent
     data class ContractDeclined(val contractId: String) : LifecycleEvent
@@ -145,6 +156,7 @@ object SessionLifecycle {
         is LifecycleState.NoiseHandshake -> when (state.subPhase) {
             HandshakeSubPhase.NOISE_EXCHANGE -> 10_000
             HandshakeSubPhase.DISTANCE_BOUNDING -> 12_000
+            HandshakeSubPhase.CODE_CHECK -> 120_000 // two people reading and confirming a code
             HandshakeSubPhase.MANIFEST_EXCHANGE -> 8_000
         }
         is LifecycleState.AttestationVerified -> 120_000
@@ -200,6 +212,10 @@ object SessionLifecycle {
                         enteredAtMillis = nowMillis,
                         boundDistanceMeters = event.distanceMeters,
                     )
+                event is LifecycleEvent.CodeCheckStarted && state.subPhase == HandshakeSubPhase.DISTANCE_BOUNDING ->
+                    state.copy(subPhase = HandshakeSubPhase.CODE_CHECK, enteredAtMillis = nowMillis)
+                event is LifecycleEvent.CodeCheckPassed && state.subPhase == HandshakeSubPhase.CODE_CHECK ->
+                    state.copy(subPhase = HandshakeSubPhase.MANIFEST_EXCHANGE, enteredAtMillis = nowMillis, boundDistanceMeters = -1.0)
                 event is LifecycleEvent.ManifestVerified && state.subPhase == HandshakeSubPhase.MANIFEST_EXCHANGE &&
                     state.boundDistanceMeters != null ->
                     LifecycleState.AttestationVerified(event.peerFingerprint, state.boundDistanceMeters, nowMillis)

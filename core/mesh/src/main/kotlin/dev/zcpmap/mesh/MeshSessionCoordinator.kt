@@ -50,6 +50,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -102,6 +103,8 @@ data class SessionAttestation(
     val lastFixAgeMillis: Long?,
     val lastDistanceMeters: Double?,
     val executingContractId: String?,
+    /** Proximity was established by both people comparing a code (no UWB distance bound). */
+    val codeVerified: Boolean = false,
 )
 
 data class TransferSummary(
@@ -242,8 +245,11 @@ class MeshSessionCoordinator(
 
     private fun activeSessionCount() = sessions.values.count { it.state !is LifecycleState.Teardown }
 
-    /** Opens a link and runs the handshake through ATTESTATION_VERIFIED (or teardown). */
-    suspend fun initiateHandshake(peerId: String, timeoutMillis: Long = 45_000): MeshCommandResult<SessionAttestation> {
+    /**
+     * Opens a link and runs the handshake through ATTESTATION_VERIFIED (or teardown). The default
+     * timeout leaves room for two people to compare a code; each FSM state has its own tighter budget.
+     */
+    suspend fun initiateHandshake(peerId: String, timeoutMillis: Long = 150_000): MeshCommandResult<SessionAttestation> {
         val d = discovered[peerId] ?: return MeshCommandResult.Failed("peer not discovered")
         sessions[peerId]?.let { s ->
             if (s.state !is LifecycleState.Teardown) return MeshCommandResult.Failed("session already exists in ${s.state.phase}")
@@ -297,6 +303,12 @@ class MeshSessionCoordinator(
             s.teardown(TeardownReason.TIMEOUT, "transfer timed out", notifyPeer = true)
             MeshCommandResult.Failed("transfer timed out")
         }
+    }
+
+    /** The person holding this phone says whether the code shown for [peerId] matches the other phone. */
+    suspend fun confirmCode(peerId: String, matches: Boolean): MeshCommandResult<Unit> {
+        val s = sessions[peerId] ?: return MeshCommandResult.Failed("no session with $peerId")
+        return s.confirmCode(matches)
     }
 
     suspend fun terminate(peerId: String, reason: TeardownReason, detail: String): MeshCommandResult<Unit> {
@@ -400,6 +412,18 @@ class MeshSessionCoordinator(
         private val recentDistances = ArrayDeque<Double>()
         @Volatile private var lastFix: RadarFix? = null
         private var boundDistance: Double? = null
+        private var rangingJob: Job? = null
+
+        // Code check (used instead of UWB when a phone cannot range and policy allows it).
+        private var peerNoUwb: String? = null
+        private var codeNonce: ByteArray? = null
+        private var peerCodeCommit: ByteArray? = null
+        private var codeCommitSent = false
+        private var codeNonceSent = false
+        @Volatile private var sasCode: String? = null
+        @Volatile private var codeConfirmedHere = false
+        @Volatile private var codeConfirmedByPeer = false
+        @Volatile private var codeVerified = false
 
         @Volatile var peerManifest: CapabilityManifest? = null
         private var pendingPeerManifest: ByteArray? = null
@@ -585,19 +609,13 @@ class MeshSessionCoordinator(
         // ------------------------------------------------------------------ distance bounding
 
         private suspend fun beginDistanceBounding() {
-            if (!ranging.isAvailable) {
-                if (policy.requireUwb) return violationLocked(TeardownReason.POLICY_VIOLATION, "UWB unavailable; policy requires distance bounding")
-                log(LogChannel.RANGING, "UWB unavailable; policy allows UNBOUNDED session")
-                boundDistance = -1.0
-                apply(LifecycleEvent.DistanceBoundVerified(-1.0))
-                return sendLocalManifest()
-            }
+            if (!ranging.isAvailable) return uwbImpossible("no_radio", "this phone has no UWB radio")
             val p = try {
                 ranging.prepare(role)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                return violationLocked(TeardownReason.RANGING_LOST, "UWB prepare failed: ${e.message}")
+                return uwbImpossible("uwb_unavailable", "UWB could not start here (${e.message ?: e.javaClass.simpleName}); is UWB turned on?")
             }
             prepared = p
             sendEncrypted(
@@ -615,7 +633,163 @@ class MeshSessionCoordinator(
             maybeStartRanging()
         }
 
+        // ------------------------------------------------------------------ code check (no UWB)
+
+        private fun inSubPhase(sp: HandshakeSubPhase): Boolean {
+            val st = state
+            return st is LifecycleState.NoiseHandshake && st.subPhase == sp
+        }
+
+        /**
+         * This phone cannot complete a UWB distance bound. With the code check allowed, tell the peer
+         * and switch both sides to CODE_CHECK; otherwise refuse. Only valid before our own ranging
+         * result was committed, so the two sides can never disagree about which proof was used.
+         */
+        private suspend fun uwbImpossible(reasonCode: String, detail: String) {
+            if (!inSubPhase(HandshakeSubPhase.DISTANCE_BOUNDING) || localRangeResult != null) return
+            if (!policy.allowCodeCheckWithoutUwb) {
+                return violationLocked(TeardownReason.POLICY_VIOLATION, "no UWB distance check possible: $detail; this phone only allows UWB-verified connections")
+            }
+            log(LogChannel.RANGING, "UWB distance check not possible ($detail); switching to the code check")
+            stopRanging()
+            sendEncrypted(FrameType.UWB_BIND, MeshMessages.encode(MeshMessage.NoUwb(reasonCode)))
+            startCodeCheck()
+        }
+
+        private suspend fun handleNoUwb(m: MeshMessage.NoUwb) {
+            if (peerNoUwb != null) return violationLocked(TeardownReason.PROTOCOL_VIOLATION, "duplicate no_uwb")
+            peerNoUwb = m.reason
+            when {
+                inSubPhase(HandshakeSubPhase.CODE_CHECK) -> Unit // both phones fell back at the same time
+                inSubPhase(HandshakeSubPhase.DISTANCE_BOUNDING) -> {
+                    if (!policy.allowCodeCheckWithoutUwb) {
+                        return violationLocked(TeardownReason.POLICY_VIOLATION, "the other phone has no UWB distance check (${m.reason}); this phone only allows UWB-verified connections")
+                    }
+                    log(LogChannel.RANGING, "the other phone cannot do UWB (${m.reason}); switching to the code check")
+                    stopRanging()
+                    startCodeCheck()
+                }
+                else -> violationLocked(TeardownReason.PROTOCOL_VIOLATION, "unexpected no_uwb")
+            }
+        }
+
+        private suspend fun stopRanging() {
+            // When the ranging coroutine itself reports the problem its flow has already ended; never
+            // cancel the coroutine we are running in (the no_uwb message still has to go out).
+            val self = currentCoroutineContext()[Job]
+            rangingJob?.let { if (it !== self) it.cancel() }
+            rangingJob = null
+            prepared?.let { p -> try { p.close() } catch (_: Exception) {} }
+            prepared = null
+            rangingConfig?.wipe()
+            rangingConfig = null
+            boundingSamples.clear()
+        }
+
+        private suspend fun startCodeCheck() {
+            apply(LifecycleEvent.CodeCheckStarted)
+            if (tornDown.get()) return
+            if (role == HandshakeRole.INITIATOR) {
+                val n = CryptoEngine.randomBytes(32)
+                codeNonce = n
+                codeCommitSent = true
+                sendEncrypted(FrameType.UWB_BIND, MeshMessages.encode(MeshMessage.CodeCommit(codeCommitment(n))))
+            }
+            publishSnapshots()
+        }
+
+        private fun codeCommitment(nonce: ByteArray): ByteArray {
+            val h = result?.handshakeHash ?: throw CryptoError.KeyWiped()
+            return CryptoEngine.sha256("ZCP1-SAS-COMMIT-v1".toByteArray(), h, nonce)
+        }
+
+        private suspend fun handleCodeCommit(m: MeshMessage.CodeCommit) {
+            if (role != HandshakeRole.RESPONDER || !inSubPhase(HandshakeSubPhase.CODE_CHECK) || peerCodeCommit != null) {
+                return violationLocked(TeardownReason.PROTOCOL_VIOLATION, "unexpected code_commit")
+            }
+            peerCodeCommit = m.commitment.copyOf()
+            val n = CryptoEngine.randomBytes(32)
+            codeNonce = n
+            codeNonceSent = true
+            sendEncrypted(FrameType.UWB_BIND, MeshMessages.encode(MeshMessage.CodeNonce(n)))
+        }
+
+        private suspend fun handleCodeNonce(m: MeshMessage.CodeNonce) {
+            val mine = codeNonce
+            if (role != HandshakeRole.INITIATOR || !inSubPhase(HandshakeSubPhase.CODE_CHECK) || !codeCommitSent || mine == null || sasCode != null) {
+                return violationLocked(TeardownReason.PROTOCOL_VIOLATION, "unexpected code_nonce")
+            }
+            sendEncrypted(FrameType.UWB_BIND, MeshMessages.encode(MeshMessage.CodeReveal(mine)))
+            showCode(initiatorNonce = mine, responderNonce = m.nonce)
+        }
+
+        private suspend fun handleCodeReveal(m: MeshMessage.CodeReveal) {
+            val commit = peerCodeCommit
+            val mine = codeNonce
+            if (role != HandshakeRole.RESPONDER || !inSubPhase(HandshakeSubPhase.CODE_CHECK) || commit == null || !codeNonceSent || mine == null || sasCode != null) {
+                return violationLocked(TeardownReason.PROTOCOL_VIOLATION, "unexpected code_reveal")
+            }
+            if (!java.security.MessageDigest.isEqual(codeCommitment(m.nonce), commit)) {
+                return violationLocked(TeardownReason.AUTHENTICATION_FAILED, "code commitment did not open correctly")
+            }
+            showCode(initiatorNonce = m.nonce, responderNonce = mine)
+        }
+
+        /** 6-digit short authentication string over the handshake transcript and both nonces. */
+        private fun showCode(initiatorNonce: ByteArray, responderNonce: ByteArray) {
+            val h = result?.handshakeHash ?: return
+            val d = CryptoEngine.sha256("ZCP1-SAS-v1".toByteArray(), h, initiatorNonce, responderNonce)
+            val v = ByteBuffer.wrap(d, 0, 4).int.toLong() and 0xFFFF_FFFFL
+            val digits = "%06d".format(v % 1_000_000)
+            val code = digits.substring(0, 3) + " " + digits.substring(3)
+            sasCode = code
+            log(LogChannel.CRYPTO, "code check: make sure the other phone shows $code, then confirm on both phones")
+            _events.tryEmit(MeshEvent.CodeCheckRequired(peerId, code))
+            publishSnapshots()
+        }
+
+        suspend fun confirmCode(matches: Boolean): MeshCommandResult<Unit> = lock.withLock {
+            if (tornDown.get()) return@withLock MeshCommandResult.Failed("session ended")
+            if (!inSubPhase(HandshakeSubPhase.CODE_CHECK) || sasCode == null) return@withLock MeshCommandResult.Failed("no code to confirm")
+            if (codeConfirmedHere) return@withLock MeshCommandResult.Ok(Unit)
+            if (!matches) {
+                violationLocked(TeardownReason.AUTHENTICATION_FAILED, "codes did not match (rejected on this phone)")
+                return@withLock MeshCommandResult.Ok(Unit)
+            }
+            codeConfirmedHere = true
+            sendEncrypted(FrameType.UWB_BIND, MeshMessages.encode(MeshMessage.CodeConfirmed))
+            log(LogChannel.CRYPTO, "code confirmed on this phone; waiting for the other phone")
+            tryCompleteCodeCheck()
+            publishSnapshots()
+            MeshCommandResult.Ok(Unit)
+        }
+
+        private suspend fun handleCodeConfirmed() {
+            if (!inSubPhase(HandshakeSubPhase.CODE_CHECK) || sasCode == null || codeConfirmedByPeer) {
+                return violationLocked(TeardownReason.PROTOCOL_VIOLATION, "unexpected code_ok")
+            }
+            codeConfirmedByPeer = true
+            log(LogChannel.CRYPTO, "the other phone confirmed the code")
+            tryCompleteCodeCheck()
+            publishSnapshots()
+        }
+
+        private suspend fun tryCompleteCodeCheck() {
+            if (!codeConfirmedHere || !codeConfirmedByPeer) return
+            codeVerified = true
+            boundDistance = -1.0
+            log(LogChannel.CRYPTO, "code check passed on both phones")
+            apply(LifecycleEvent.CodeCheckPassed)
+            if (tornDown.get()) return
+            sendLocalManifest()
+            pendingPeerManifest?.let { pendingPeerManifest = null; handleManifest(it) }
+        }
+
         private suspend fun handleUwbParams(m: MeshMessage.UwbParams) {
+            if (inSubPhase(HandshakeSubPhase.CODE_CHECK) && peerUwb == null) {
+                peerUwb = m // sent before the peer learned that we switched to the code check; unused
+                return
+            }
             val st = state
             if (st !is LifecycleState.NoiseHandshake || st.subPhase != HandshakeSubPhase.DISTANCE_BOUNDING || peerUwb != null) {
                 return violationLocked(TeardownReason.PROTOCOL_VIOLATION, "unexpected uwb_params")
@@ -637,6 +811,9 @@ class MeshSessionCoordinator(
             if (rangingConfig != null) return
             val psts = p.local.supportsProvisionedSts && peer.provisionedSts
             if (!psts && policy.requireProvisionedSts) {
+                if (policy.allowCodeCheckWithoutUwb) {
+                    return uwbImpossible("no_provisioned_sts", "provisioned STS unsupported by one side, and static STS is refused")
+                }
                 return violationLocked(TeardownReason.POLICY_VIOLATION, "provisioned STS unsupported by one side; static STS is refused")
             }
             provisionedSts = psts
@@ -651,11 +828,13 @@ class MeshSessionCoordinator(
             stsKey.close()
             rangingConfig = cfg
             log(LogChannel.RANGING, "secure ranging start: session=$uwbSessionId ch=$channel pre=$preamble psts=$psts")
-            jobs += scope.launch { rangingLoop(p, cfg) }
+            val job = scope.launch { rangingLoop(p, cfg) }
+            rangingJob = job
+            jobs += job
         }
 
         private suspend fun rangingLoop(p: PreparedRanging, cfg: BoundRangingConfig) {
-            try {
+            val problem: String = try {
                 p.start(cfg).collect { ev ->
                     when (ev) {
                         is RangingEvent.Sample -> {
@@ -667,21 +846,33 @@ class MeshSessionCoordinator(
                             lock.withLock { if (!tornDown.get()) onRangingSample(d) }
                         }
                         is RangingEvent.Dropout -> log(LogChannel.RANGING, "ranging dropout: ${ev.reason}")
-                        is RangingEvent.Failure -> {
-                            lock.withLock { violationLocked(TeardownReason.RANGING_LOST, "ranging failure: ${ev.reason}") }
-                            return@collect
-                        }
+                        is RangingEvent.Failure -> throw RangingStopped("ranging failure: ${ev.reason}")
                     }
                 }
-                if (!tornDown.get()) lock.withLock { violationLocked(TeardownReason.RANGING_LOST, "ranging session ended") }
+                "ranging session ended"
+            } catch (e: RangingStopped) {
+                e.message ?: "ranging failure"
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
-                if (!tornDown.get()) lock.withLock { violationLocked(TeardownReason.RANGING_LOST, "ranging error: ${e.message}") }
+                "ranging error: ${e.message}"
+            }
+            if (tornDown.get()) return
+            val self = currentCoroutineContext()[Job]
+            lock.withLock { if (!tornDown.get() && rangingJob === self) rangingProblem(problem) }
+        }
+
+        /** Before our distance result is committed a UWB problem may fall back to the code check. */
+        private suspend fun rangingProblem(detail: String) {
+            if (policy.allowCodeCheckWithoutUwb && inSubPhase(HandshakeSubPhase.DISTANCE_BOUNDING) && localRangeResult == null) {
+                uwbImpossible("ranging_failed", detail)
+            } else {
+                violationLocked(TeardownReason.RANGING_LOST, detail)
             }
         }
 
         private suspend fun onRangingSample(d: Double) {
+            if (codeVerified || inSubPhase(HandshakeSubPhase.CODE_CHECK)) return
             val st = state
             if (st is LifecycleState.NoiseHandshake && st.subPhase == HandshakeSubPhase.DISTANCE_BOUNDING) {
                 if (localRangeResult != null) return
@@ -710,6 +901,10 @@ class MeshSessionCoordinator(
         }
 
         private suspend fun handleUwbResult(m: MeshMessage.UwbResult) {
+            if (inSubPhase(HandshakeSubPhase.CODE_CHECK) && peerRangeResult == null) {
+                peerRangeResult = m // stale: the pair switched to the code check; unused
+                return
+            }
             val st = state
             if (st !is LifecycleState.NoiseHandshake || st.subPhase != HandshakeSubPhase.DISTANCE_BOUNDING || peerRangeResult != null) {
                 return violationLocked(TeardownReason.PROTOCOL_VIOLATION, "unexpected uwb_result")
@@ -759,7 +954,8 @@ class MeshSessionCoordinator(
             val res = result ?: return violationLocked(TeardownReason.PROTOCOL_VIOLATION, "manifest before handshake")
             val st = state
             val inExchange = st is LifecycleState.NoiseHandshake && st.subPhase == HandshakeSubPhase.MANIFEST_EXCHANGE
-            val early = st is LifecycleState.NoiseHandshake && st.subPhase == HandshakeSubPhase.DISTANCE_BOUNDING
+            val early = st is LifecycleState.NoiseHandshake &&
+                (st.subPhase == HandshakeSubPhase.DISTANCE_BOUNDING || st.subPhase == HandshakeSubPhase.CODE_CHECK)
             val refresh = st.phase in setOf(
                 LifecyclePhase.ATTESTATION_VERIFIED, LifecyclePhase.AGENT_NEGOTIATING,
                 LifecyclePhase.TASK_EXECUTING, LifecyclePhase.SETTLEMENT_COMPLETE,
@@ -1251,6 +1447,11 @@ class MeshSessionCoordinator(
                     t.completed.complete(msg)
                 }
                 is MeshMessage.Settlement -> handleSettlement(msg)
+                is MeshMessage.NoUwb -> handleNoUwb(msg)
+                is MeshMessage.CodeCommit -> handleCodeCommit(msg)
+                is MeshMessage.CodeNonce -> handleCodeNonce(msg)
+                is MeshMessage.CodeReveal -> handleCodeReveal(msg)
+                MeshMessage.CodeConfirmed -> handleCodeConfirmed()
             }
         }
 
@@ -1292,7 +1493,14 @@ class MeshSessionCoordinator(
                 lock.withLock {
                     if (tornDown.get()) return
                     val st = state
-                    if (SessionLifecycle.isExpired(st, now)) {
+                    if (policy.allowCodeCheckWithoutUwb && result != null && localRangeResult == null &&
+                        st is LifecycleState.NoiseHandshake && st.subPhase == HandshakeSubPhase.DISTANCE_BOUNDING &&
+                        now - st.enteredAtMillis > policy.uwbFallbackAfterMillis
+                    ) {
+                        uwbImpossible("ranging_timeout", "no UWB distance within ${policy.uwbFallbackAfterMillis / 1000} s")
+                        if (tornDown.get()) return
+                    }
+                    if (SessionLifecycle.isExpired(state, now)) {
                         return violationLocked(TeardownReason.TIMEOUT, "state ${st.phase} exceeded its time budget")
                     }
                     if (now - lastRxMillis > policy.linkTimeoutMillis) {
@@ -1403,6 +1611,8 @@ class MeshSessionCoordinator(
                 prepared = null
                 rangingConfig?.wipe()
                 rangingConfig = null
+                codeNonce?.fill(0)
+                codeNonce = null
                 inbound.values.forEach { it.file.abort() }
                 inbound.clear()
                 outbound.values.forEach { t ->
@@ -1485,6 +1695,7 @@ class MeshSessionCoordinator(
                 lastFixAgeMillis = lastFix?.let { clock() - it.atMillis },
                 lastDistanceMeters = lastFix?.distanceMeters,
                 executingContractId = (st as? LifecycleState.TaskExecuting)?.contractId,
+                codeVerified = codeVerified && st !is LifecycleState.Teardown,
             )
         }
 
@@ -1497,6 +1708,8 @@ class MeshSessionCoordinator(
                 boundDistanceMeters = boundDistance, lastFix = lastFix, provisionedSts = provisionedSts,
                 manifestExpiresAtSeconds = peerManifest?.expiresAtSeconds, bulkLinkActive = bulkLink != null,
                 openContracts = contracts.values.filter { it.peerId == peerId && it.status in setOf(ContractStatus.PROPOSED, ContractStatus.ACCEPTED, ContractStatus.EXECUTING, ContractStatus.AWAITING_USER_APPROVAL) }.map { it.contractId },
+                codeCheck = sasCode?.takeIf { inSubPhase(HandshakeSubPhase.CODE_CHECK) }?.let { CodeCheckView(it, codeConfirmedHere, codeConfirmedByPeer) },
+                codeVerified = codeVerified && st !is LifecycleState.Teardown,
             )
         }
 
@@ -1507,3 +1720,5 @@ class MeshSessionCoordinator(
 }
 
 class TransferAborted(message: String) : Exception(message)
+
+private class RangingStopped(message: String) : Exception(message)

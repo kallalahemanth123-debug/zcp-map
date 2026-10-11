@@ -32,6 +32,8 @@ data class AgentSettings(
     val radiusMeters: Double = 3.0,
     /** Off = allow static-STS UWB on phones without provisioned STS (weaker: no relay protection). */
     val requireProvisionedSts: Boolean = true,
+    /** On = when UWB is not possible, both people compare a 6-digit code instead (opt-in). */
+    val allowCodeCheck: Boolean = false,
 ) {
     /** Returns a list of problems; empty when the settings can be used. */
     fun validate(): List<String> {
@@ -72,6 +74,7 @@ class SettingsStore(context: Context) {
             maxAcceptMb = prefs.getInt("max_accept_mb", d.maxAcceptMb),
             radiusMeters = prefs.getFloat("radius", d.radiusMeters.toFloat()).toDouble(),
             requireProvisionedSts = prefs.getBoolean("require_psts", d.requireProvisionedSts),
+            allowCodeCheck = prefs.getBoolean("allow_code_check", d.allowCodeCheck),
         )
     }
 
@@ -89,6 +92,7 @@ class SettingsStore(context: Context) {
             putInt("max_accept_mb", s.maxAcceptMb)
             putFloat("radius", s.radiusMeters.toFloat())
             putBoolean("require_psts", s.requireProvisionedSts)
+            putBoolean("allow_code_check", s.allowCodeCheck)
         }
     }
 }

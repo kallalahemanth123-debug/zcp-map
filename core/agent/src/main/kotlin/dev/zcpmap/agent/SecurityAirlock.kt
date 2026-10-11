@@ -163,10 +163,12 @@ class SecurityAirlock(
         if (!a.handshakeComplete) return "session with $peer has not completed the Noise handshake"
         if (!a.transportKeysLive) return "session keys for $peer are wiped"
         if (a.peerFingerprint == null) return "peer identity not authenticated"
-        if (!a.distanceBound) return "no UWB distance bound for $peer"
+        if (!a.distanceBound && !a.codeVerified) return "no proximity proof for $peer (neither a UWB distance bound nor a confirmed code)"
         val exp = a.manifestExpiresAtSeconds ?: return "no verified capability manifest from $peer"
         if (exp * 1000 <= state.nowMillis() + 5_000) return "peer manifest expired or about to expire"
-        if (needFreshFix) {
+        // Code-checked sessions have no radio to re-measure; the contract evaluator makes every contract on
+        // them wait for a human tap instead.
+        if (needFreshFix && a.distanceBound) {
             val age = a.lastFixAgeMillis ?: return "no recent UWB fix for $peer"
             if (age > 3_000) return "UWB fix for $peer is stale (${age}ms)"
             val d = a.lastDistanceMeters ?: return "no distance"

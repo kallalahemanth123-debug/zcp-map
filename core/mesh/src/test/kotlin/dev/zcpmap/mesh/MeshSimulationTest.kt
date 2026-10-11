@@ -7,6 +7,7 @@ import dev.zcpmap.security.StaticKeyRotator
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -22,10 +23,13 @@ import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
-private class Node(name: String, net: InMemoryNetwork, distance: Double, scope: CoroutineScope, psts: Boolean = true, requirePsts: Boolean = true) {
+private class Node(
+    name: String, net: InMemoryNetwork, distance: Double, scope: CoroutineScope, psts: Boolean = true, requirePsts: Boolean = true,
+    uwb: Boolean = true, codeCheck: Boolean = false, failRanging: Boolean = false,
+) {
     val dir: File = Files.createTempDirectory("zcp-$name").toFile()
     val transport = FakeTransport(name, net)
-    val ranging = FakeRanging(distance, psts)
+    val ranging = FakeRanging(distance, psts, available = uwb, failRanging = failRanging)
     val signer = SoftwareEd25519Signer.generate()
     val sandbox = SandboxFileStore(dir, 1L shl 30)
     val mesh = MeshSessionCoordinator(
@@ -33,7 +37,10 @@ private class Node(name: String, net: InMemoryNetwork, distance: Double, scope: 
         rotator = StaticKeyRotator(signer, System::currentTimeMillis),
         sandbox = sandbox,
         device = { DeviceConstraints(80, true, ThermalLevel.NOMINAL, 50L shl 30) },
-        policy = MeshPolicy(storageReserveBytes = 1L shl 20, rangingWindowMillis = 4_000, requireProvisionedSts = requirePsts),
+        policy = MeshPolicy(
+            storageReserveBytes = 1L shl 20, rangingWindowMillis = 4_000, requireProvisionedSts = requirePsts,
+            allowCodeCheckWithoutUwb = codeCheck, uwbFallbackAfterMillis = 3_000,
+        ),
         agentModel = "local-agent",
         scope = scope,
     )
@@ -42,11 +49,15 @@ private class Node(name: String, net: InMemoryNetwork, distance: Double, scope: 
 }
 
 class MeshSimulationTest {
-    private fun withPair(distA: Double, distB: Double, pstsB: Boolean = true, requirePsts: Boolean = true, block: suspend (Node, Node, CoroutineScope) -> Unit): Unit = runBlocking {
+    private fun withPair(
+        distA: Double, distB: Double, pstsB: Boolean = true, requirePsts: Boolean = true,
+        uwbA: Boolean = true, uwbB: Boolean = true, codeCheck: Boolean = false, failRangingB: Boolean = false,
+        block: suspend (Node, Node, CoroutineScope) -> Unit,
+    ): Unit = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val net = InMemoryNetwork()
-        val a = Node("alpha", net, distA, scope, requirePsts = requirePsts)
-        val b = Node("bravo", net, distB, scope, pstsB, requirePsts)
+        val a = Node("alpha", net, distA, scope, requirePsts = requirePsts, uwb = uwbA, codeCheck = codeCheck)
+        val b = Node("bravo", net, distB, scope, pstsB, requirePsts, uwb = uwbB, codeCheck = codeCheck, failRanging = failRangingB)
         listOf(a, b).forEach { n ->
             scope.launch { n.mesh.events.collect { e -> if (e is MeshEvent.SecurityAlert) n.alerts += e; if (e is MeshEvent.ContractProposed) n.proposals += e } }
         }
@@ -195,5 +206,94 @@ class MeshSimulationTest {
         waitFor { b.proposals.isNotEmpty() }
         val seen = b.proposals.first().contract.terms.summary
         assertTrue(seen.none { it == '‮' || it == '​' || Character.isSurrogate(it) }, "invisible characters must be stripped: $seen")
+    }
+
+    // ------------------------------------------------------------------ phones without UWB: code check
+
+    /** Waits until both phones show a code for each other and returns (code at A, code at B). */
+    private suspend fun codesShown(a: Node, b: Node, bId: String): Pair<String, String> {
+        waitFor { a.mesh.peers.value[bId]?.codeCheck != null && b.mesh.peers.value.values.any { it.codeCheck != null } }
+        return a.mesh.peers.value[bId]!!.codeCheck!!.code to b.mesh.peers.value.values.first { it.codeCheck != null }.codeCheck!!.code
+    }
+
+    @Test
+    fun phoneWithoutUwbIsRefusedUnlessTheCodeCheckIsAllowed(): Unit = withPair(1.0, 1.0, uwbB = false) { a, b, _ ->
+        assertIs<MeshCommandResult.Failed>(a.mesh.initiateHandshake(a.mesh.discoveredPeerIds().single()))
+        waitFor { b.alerts.any { it.reason == TeardownReason.POLICY_VIOLATION && it.detail.contains("no UWB") } }
+        waitFor { a.alerts.any { it.reason == TeardownReason.PEER_ABORT } }
+    }
+
+    @Test
+    fun codeCheckConnectsPhonesWithoutUwb(): Unit = withPair(1.0, 1.0, uwbB = false, codeCheck = true) { a, b, scope ->
+        val bId = a.mesh.discoveredPeerIds().single()
+        val pending = scope.async { a.mesh.initiateHandshake(bId) }
+        val (codeA, codeB) = codesShown(a, b, bId)
+        assertEquals(codeA, codeB, "both phones must show the same code")
+        assertTrue(Regex("^[0-9]{3} [0-9]{3}$").matches(codeA), codeA)
+        val aId = b.mesh.peers.value.keys.single()
+        assertEquals(LifecyclePhase.NOISE_HANDSHAKE, a.mesh.attestation(bId)!!.phase, "nothing is verified before the people confirm")
+
+        assertIs<MeshCommandResult.Ok<Unit>>(a.mesh.confirmCode(bId, matches = true))
+        assertIs<MeshCommandResult.Ok<Unit>>(b.mesh.confirmCode(aId, matches = true))
+        val att = pending.await()
+        assertIs<MeshCommandResult.Ok<SessionAttestation>>(att)
+        assertEquals(LifecyclePhase.ATTESTATION_VERIFIED, att.value.phase)
+        assertTrue(att.value.codeVerified)
+        assertEquals(false, att.value.distanceBound)
+        waitFor { b.mesh.attestation(aId)?.phase == LifecyclePhase.ATTESTATION_VERIFIED }
+        assertTrue(b.mesh.attestation(aId)!!.codeVerified)
+        assertTrue(a.ranging.configs.isEmpty() && b.ranging.configs.isEmpty(), "no UWB session may run")
+
+        // Without a continuous distance check every contract still needs a human tap.
+        val p = a.mesh.proposeContract(bId, ContractTerms(TaskType.FILE_SHARE, TransferDirection.PROPOSER_SENDS, 100, 0, 60, 0, "small file"))
+        val cid = (p as MeshCommandResult.Ok).value.contractId
+        waitFor { b.proposals.any { it.contract.contractId == cid } }
+        val eval = (b.mesh.evaluate(cid) as MeshCommandResult.Ok).value
+        assertEquals(Feasibility.NEEDS_USER_APPROVAL, eval.verdict)
+        assertTrue(eval.reasons.any { it.contains("comparing a code") }, eval.reasons.toString())
+        assertTrue(a.alerts.isEmpty() && b.alerts.isEmpty(), "no security alerts expected: ${a.alerts + b.alerts}")
+    }
+
+    @Test
+    fun codeCheckWorksWhenNeitherPhoneHasUwb(): Unit = withPair(1.0, 1.0, uwbA = false, uwbB = false, codeCheck = true) { a, b, scope ->
+        val bId = a.mesh.discoveredPeerIds().single()
+        val pending = scope.async { a.mesh.initiateHandshake(bId) }
+        val (codeA, codeB) = codesShown(a, b, bId)
+        assertEquals(codeA, codeB)
+        b.mesh.confirmCode(b.mesh.peers.value.keys.single(), matches = true)
+        a.mesh.confirmCode(bId, matches = true)
+        assertIs<MeshCommandResult.Ok<SessionAttestation>>(pending.await())
+    }
+
+    @Test
+    fun rejectingTheCodeTearsDownBothPhones(): Unit = withPair(1.0, 1.0, uwbB = false, codeCheck = true) { a, b, scope ->
+        val bId = a.mesh.discoveredPeerIds().single()
+        val pending = scope.async { a.mesh.initiateHandshake(bId) }
+        codesShown(a, b, bId)
+        a.mesh.confirmCode(bId, matches = false)
+        assertIs<MeshCommandResult.Failed>(pending.await())
+        waitFor { a.alerts.any { it.reason == TeardownReason.AUTHENTICATION_FAILED && it.detail.contains("did not match") } }
+        waitFor { b.alerts.any { it.reason == TeardownReason.PEER_ABORT } }
+    }
+
+    @Test
+    fun failingUwbRangingFallsBackToTheCodeCheck(): Unit = withPair(1.0, 1.0, failRangingB = true, codeCheck = true) { a, b, scope ->
+        val bId = a.mesh.discoveredPeerIds().single()
+        val pending = scope.async { a.mesh.initiateHandshake(bId) }
+        val (codeA, codeB) = codesShown(a, b, bId)
+        assertEquals(codeA, codeB)
+        a.mesh.confirmCode(bId, matches = true)
+        b.mesh.confirmCode(b.mesh.peers.value.keys.single(), matches = true)
+        val att = pending.await()
+        assertIs<MeshCommandResult.Ok<SessionAttestation>>(att)
+        assertTrue(att.value.codeVerified)
+    }
+
+    @Test
+    fun uwbStillPreferredWhenBothPhonesHaveIt(): Unit = withPair(1.0, 1.0, codeCheck = true) { a, _, _ ->
+        val att = a.mesh.initiateHandshake(a.mesh.discoveredPeerIds().single())
+        assertIs<MeshCommandResult.Ok<SessionAttestation>>(att)
+        assertTrue(att.value.distanceBound)
+        assertEquals(false, att.value.codeVerified)
     }
 }

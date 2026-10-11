@@ -20,7 +20,6 @@ import dev.zcpmap.security.CryptoEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.onCompletion
 
@@ -119,17 +118,14 @@ class UwbProximityManager(private val context: Context) : SecureRangingPort {
                 peerDevices = listOf(UwbDevice(UwbAddress(config.peerAddress))),
                 updateRateType = RangingParameters.RANGING_UPDATE_RATE_FREQUENT,
             )
-            return flow {
-                try {
-                    scope.prepareSession(params)
-                        .mapNotNull { r -> translate(r) }
-                        .collect { emit(it) }
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
+            // Errors from the UWB stack become a Failure event via catch(), which (unlike a try/catch
+            // around emit) never swallows exceptions thrown by the collector downstream.
+            return scope.prepareSession(params)
+                .mapNotNull { r -> translate(r) }
+                .catch { e ->
+                    if (e is CancellationException) throw e
                     emit(RangingEvent.Failure("${e.javaClass.simpleName}: ${e.message}"))
                 }
-            }.catch { e -> emit(RangingEvent.Failure(e.message ?: "ranging error")) }
                 .onCompletion { java.util.Arrays.fill(sessionKeyInfo, 0) }
         }
 
