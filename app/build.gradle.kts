@@ -76,6 +76,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.play.services.nearby)
+    implementation(libs.androidx.fragment)
     implementation(libs.litertlm.android)
     debugImplementation(libs.androidx.compose.ui.tooling)
 

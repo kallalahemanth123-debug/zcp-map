@@ -22,6 +22,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.core.uwb)
     implementation(libs.play.services.nearby)
+    implementation(libs.androidx.fragment)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.coroutines.play.services)
 
