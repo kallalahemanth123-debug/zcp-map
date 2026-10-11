@@ -77,6 +77,20 @@ jobs:
             done
           done
 
+      - name: Remove old ci-logs branches (log publishing is off)
+        if: always() && vars.PUBLISH_CI_LOGS != 'true' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          remote="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}"
+          for b in ci-logs-build ci-logs-emulator; do
+            if git ls-remote --exit-code --heads "$remote" "$b" >/dev/null 2>&1; then
+              git push -q "$remote" --delete "$b" && echo "deleted $b"
+            fi
+          done
+          true
+
       - name: Publish logs to the ci-logs-build branch
         if: always() && vars.PUBLISH_CI_LOGS == 'true'
         env:
